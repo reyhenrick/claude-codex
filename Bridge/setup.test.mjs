@@ -1,0 +1,43 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { ensureRuntime } from './runtime.mjs';
+import { createProfile, profileConfig } from './setup.mjs';
+const root = fileURLToPath(new URL('../build/setup-fixtures/', import.meta.url));
+await mkdir(root, { recursive: true });
+test('first-run runtime is private, idempotent and never replaces existing credentials', async () => {
+ const dir = await mkdtemp(join(root, 'runtime-'));
+ const config = await ensureRuntime(dir), key = await readFile(join(dir, 'management.key'));
+ assert.equal(config.server.host, '127.0.0.1'); assert.equal(config.server['commercial-mode'], true);
+ assert.equal(config.routing['force-model-prefix'], true);
+ assert.equal(config.routing['session-affinity'], false);
+ assert.equal(config.management['allow-remote'], false);
+ for (const name of ['management.key', 'config.yaml', 'accounts-state.json']) assert.equal((await stat(join(dir, name))).mode & 0o777, 0o600);
+ assert.equal((await stat(join(dir, 'auth'))).mode & 0o777, 0o700);
+ const again = await ensureRuntime(dir); assert.deepEqual(again, config); assert.deepEqual(await readFile(join(dir,'management.key')), key);
+ assert.equal(JSON.parse(await readFile(join(dir,'accounts-state.json'))).accounts.length, 0);
+});
+test('partial first-run state fails closed without overwriting data', async () => {
+ const dir = await mkdtemp(join(root, 'partial-')); await writeFile(join(dir, 'management.key'), 'synthetic-existing');
+ await assert.rejects(ensureRuntime(dir), /incompleta/); assert.equal(await readFile(join(dir, 'management.key'),'utf8'), 'synthetic-existing');
+});
+test('new profile preserves existing profiles, metadata and inactive selection', async () => {
+ const dir = await mkdtemp(join(root, 'profiles-')); const library = join(dir, 'configLibrary'); await mkdir(library);
+ const meta = { appliedId: 'existing', entries: [{ id: 'existing', name: 'Existing' }], futureKey: { keep: true } };
+ await writeFile(join(dir, 'claude_desktop_config.json'), JSON.stringify({ deploymentMode: '1p', preferences: { preserve: true } }));
+ await writeFile(join(library, '_meta.json'), JSON.stringify(meta)); await writeFile(join(library, 'existing.json'), '{"synthetic":"preserve exact bytes"}');
+ const result = await createProfile({ root: dir, name: 'Codex', activate: false });
+ const after = JSON.parse(await readFile(join(library, '_meta.json')));
+ assert.equal(JSON.parse(await readFile(join(dir, 'claude_desktop_config.json'))).deploymentMode, '1p');
+ assert.equal(after.appliedId, 'existing'); assert.deepEqual(after.entries[0], meta.entries[0]); assert.deepEqual(after.futureKey, meta.futureKey);
+ assert.equal(await readFile(join(library, 'existing.json'), 'utf8'), '{"synthetic":"preserve exact bytes"}');
+ const generated = JSON.parse(await readFile(join(library, result.profileId + '.json')));
+ assert.deepEqual(generated, profileConfig()); assert.equal(generated.inferenceModels.length, 4);
+ assert.equal(generated.defaultModelEffort, 'xhigh'); assert.equal(generated.inferenceGatewayBaseUrl, 'http://127.0.0.1:18765');
+ await assert.rejects(createProfile({ root: dir, name: 'codex' }), /Já existe/);
+ const next = await createProfile({ root: dir, name: 'Another', activate: true });
+ assert.equal(JSON.parse(await readFile(join(library, '_meta.json'))).appliedId, next.profileId);
+ assert.deepEqual(JSON.parse(await readFile(join(dir, 'claude_desktop_config.json'))), { deploymentMode: '3p', preferences: { preserve: true } });
+});

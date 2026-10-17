@@ -1,0 +1,12 @@
+build/
+.cache/
+.DS_Store
+node_modules/
+*.log
+*.key
+*.p12
+*.mobileprovision
+auth/
+accounts-state.json
+config.yaml
+.env*
