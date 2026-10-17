@@ -52,6 +52,8 @@ A configuração de perfis segue o [contrato de provedores do Claude Desktop](ht
 
 Antes de cada inferência, o serviço consulta o uso da conta. Uma consulta desconhecida ou inválida impede o uso daquela conta. Uma janela esgotada impede o uso, mesmo quando a resposta informa créditos adicionais. Limites adicionais informados pelo serviço são tratados de forma conservadora.
 
+A seleção manual passa a valer na próxima chamada ao modelo de cada conversa. Essa chamada pode ser a continuação após uma ferramenta, ainda durante a resposta à mesma mensagem do usuário. A chamada que já começou termina na conta original. O gerenciador não espera a conversa inteira acabar e não tenta transferir uma resposta parcialmente recebida.
+
 No modo automático, falhas de autorização ou limite recebidas antes do início da resposta permitem tentar a próxima conta. Após começar a devolver uma resposta, o serviço não a repete em outra conta. No modo fixo, não passa para outra conta.
 
 Esta verificação reduz o uso após o esgotamento, mas não fornece uma garantia de gasto zero: uma solicitação pode cruzar o limite, ou outra sessão pode consumir a conta entre a consulta e a inferência. O app não compra créditos, não altera configurações de cobrança e não resgata resets. A decisão de cobrança permanece com o serviço upstream e com as configurações da conta.
@@ -78,7 +80,7 @@ npm --prefix Bridge test
 ./build.sh arm64
 ```
 
-Os testes usam contas e respostas sintéticas. Cobrem cota esgotada/desconhecida, modo fixo, ordem, concorrência nas configurações, falha antes do stream, cancelamento de stream, autorização, remoção de conta, permissões locais e preservação dos perfis existentes.
+Os testes usam contas e respostas sintéticas. Cobrem cota esgotada/desconhecida, modo fixo, ordem, concorrência nas configurações, falha antes do stream, cancelamento de stream, troca de conta durante uma resposta em andamento, autorização, remoção de conta, permissões locais e preservação dos perfis existentes.
 
 A validação local adicional incluiu os quatro modelos, ida e volta de ferramenta, continuidade de histórico entre duas contas reais, salto de conta esgotada e um Workflow do runtime do Claude Code. A interface do gerenciador foi conferida no macOS. A criação de uma instalação separada foi verificada por arquivos e assinaturas, sem abrir a interface dessa cópia do Claude. A aparência do controle Ultracode no Claude Desktop não é validada por esses testes.
 

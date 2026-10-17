@@ -194,3 +194,38 @@ test('a successful OAuth for the wrong account cannot be mistaken for an unchang
   assert.match(status.connection.error, /não corresponde/);
   assert.equal(status.accounts.length, 3);
 });
+
+test('changing account during an active stream affects the next inference without interrupting or replaying the current one', async t => {
+  const f = await fixture(t); const routed = []; let firstResponse;
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks)); routed.push(body.model);
+    if (body.stream) {
+      firstResponse = res;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('event: content_block_delta\ndata: {"delta":{"text":"started on first account"}}\n\n');
+    } else {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'next iteration on second account' }] }));
+    }
+  });
+  await start(t, upstream);
+  const base = await start(t, createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic' }));
+  const first = await post(base, { ...message, stream: true }); const reader = first.body.getReader();
+  assert.match(new TextDecoder().decode((await reader.read()).value), /started on first account/);
+  assert.equal(f.controller.activeAccounts.get(emails[0]), 1);
+  const changed = await fetch(base + '/_bridge/settings', {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-bridge-action': 'accounts' },
+    body: JSON.stringify({ revision: 0, mode: 'fixed', fixed_email: emails[1] }),
+  });
+  assert.equal(changed.status, 200);
+  const second = await post(base); assert.equal(second.status, 200);
+  assert.equal((await second.json()).content[0].text, 'next iteration on second account');
+  assert.deepEqual(routed, ['conta-01/gpt-6.1-sol-fast', 'conta-02/gpt-6.1-sol-fast']);
+  assert.equal(f.controller.activeAccounts.get(emails[0]), 1);
+  firstResponse.end('event: message_stop\ndata: {}\n\n');
+  let ending = ''; for (;;) { const chunk = await reader.read(); if (chunk.done) break; ending += new TextDecoder().decode(chunk.value); }
+  assert.match(ending, /message_stop/);
+  assert.equal(f.controller.activeAccounts.get(emails[0]), 0);
+  assert.equal(routed.length, 2);
+});
