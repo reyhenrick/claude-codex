@@ -24,7 +24,7 @@
 "action.applyResetMenu" = "Aplicar reset agora";
 "action.cancel" = "Cancelar";
 "action.checkAttempt" = "Verificar tentativa";
-"action.checkAttemptMenu" = "Verificar tentativa…";
+"action.checkAttemptMenu" = "Verificar tentativa";
 "action.choose" = "Escolher…";
 "action.connect" = "Conectar conta";
 "action.continueBrowser" = "Continuar no navegador";
@@ -109,7 +109,7 @@
 "reset.available" = "Um reset está disponível para aplicar.";
 "reset.checkForAccount" = "Verificar reset de {0}";
 "reset.confirmedTitle" = "Reset confirmado";
-"reset.identityChanged" = "A identidade da conta mudou. Reconecte a conta para conferir o reset.";
+"reset.identityChanged" = "A identidade da conta não corresponde à tentativa pendente. Revise essa tentativa antes de alterar a conta; nenhum novo reset será enviado.";
 "reset.noCreditMessage" = "Não há reset disponível nesta conta neste momento.";
 "reset.noneAvailable" = "Não há resets disponíveis nesta conta.";
 "reset.notApplicable" = "Ainda não aplicável";
@@ -149,7 +149,7 @@
 "setup.migrationDescription" = "Copia dados locais compatíveis para a nova instalação. Os dados originais permanecem no lugar; um relatório lista os itens ignorados.";
 "setup.migrationSummary" = "Migração: {0} arquivos copiados, {1} ignorados.";
 "setup.migrationWarnings" = "Alguns itens precisam de atenção. Confira o relatório de migração.";
-"setup.modelsDescription" = "GPT-6.1 Sol, GPT-6 Luna e GPT-6 Astra, com as velocidades disponíveis. Esforço Extra High e Workflows/Ultracode. Reabra a instalação separada para atualizar seu menu de modelos.";
+"setup.modelsDescription" = "GPT-6.1 Sol, GPT-6 Luna e GPT-6 Astra, com as velocidades disponíveis, seletor nativo de esforço e Workflows. Reabra a instalação separada para atualizar seu menu de modelos.";
 "setup.officialApp" = "Aplicativo oficial instalado";
 "setup.preparing" = "Preparando…";
 "setup.serviceReady" = "Serviço preparado. Conecte suas contas para começar.";
@@ -177,3 +177,4 @@
 
 "launcher.connectionRequired" = "Conecte uma conta primeiro";
 "launcher.connectAccounts" = "Abra o Claude Codex e conecte uma conta com acesso a um modelo compatível. Depois, abra esta instalação novamente.";
+"updater.stagedOnQuit" = "Esta atualização já foi baixada e será instalada ao sair. A instalação automática continua desativada para as próximas atualizações.";

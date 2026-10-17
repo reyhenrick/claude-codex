@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.1
+
+- Autenticação privada no gateway local, sem chave fixa pública.
+- Seletor nativo de esforço preservado em Normal, Fast e Ultrafast; sem imposição global de Extra High.
+- Confirmações de reset vinculadas à tentativa apresentada, com bloqueio de consentimentos antigos.
+- Recuperação do serviço após falhas e atualizações, incluindo instalações ao sair.
+- Correlação conservadora da conta autorizada pelo OAuth e validação integral das regras de modalidade.
+- Verificação criptográfica do fornecedor do Claude, remoção de credenciais de conexão e proteção contra skills parcialmente migradas.
+- Relatórios de falha acessíveis, atualização de cotas após conectar uma conta e cancelamento de login consistente.
+- Ícone de terminal e controles “Aplicar reset agora” e “Reset automático” alinhados na mesma linha.
+
 ## 1.0.0
 
 Claude Codex é um aplicativo nativo para macOS 26 ou posterior, com binário universal para Apple Silicon e Intel. Reúne o uso das contas Codex em uma instalação separada do Claude Code.

@@ -6,7 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { models, baseModels, resolveModel, resolveModelVariant, supportedModelIds } from './model-catalog.mjs';
 import { ManagementClient, PoolController, capabilityTTL } from './pool-controller.mjs';
-import { createPoolRouter } from './pool-router.mjs';
+import { createPoolRouter as authenticatedRouter } from './pool-router.mjs';
+const ingressKey = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';
+const createPoolRouter = options => authenticatedRouter({ ...options, getIngressKey: async () => ingressKey });
+const authorizedFetch = (url, options = {}) => globalThis.fetch(url, { ...options, headers: { authorization: `Bearer ${ingressKey}`, ...options.headers } });
 import { ensureRuntime, makeConfig, upgradeModelConfig } from './runtime.mjs';
 
 const responseModels = (slugs = baseModels.map(model => model.id), tiers = ['priority']) => ({ models: slugs.map(slug => ({ slug, visibility: 'list', service_tiers: tiers.map(id => ({ id })) })) });
@@ -276,8 +279,8 @@ test('router has an empty safe menu and refuses unsupported Ultra without a back
   const f = await fixture(t); let dispatched = 0;
   const backend = await server(t, http.createServer(async (req, res) => { for await (const chunk of req) {} dispatched++; res.end('{}'); }));
   const base = await server(t, createPoolRouter({ controller: f.controller, getClientKey: async () => 'synthetic', backendPort: Number(new URL(backend).port) }));
-  const request = model => fetch(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, messages: [] }) });
-  const menu = (await (await fetch(base + '/v1/models')).json()).data;
+  const request = model => authorizedFetch(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, messages: [] }) });
+  const menu = (await (await authorizedFetch(base + '/v1/models')).json()).data;
   assert.equal(menu.length, 6);
   for (const model of menu) {
     const family = resolveModelVariant(model.id).family;
@@ -288,7 +291,7 @@ test('router has an empty safe menu and refuses unsupported Ultra without a back
   assert.equal((await request('us.anthropic.claude-haiku-5-5')).status, 400);
   assert.equal(dispatched, 0);
   f.rows.length = 0; await f.controller.credentials(true);
-  assert.deepEqual(await (await fetch(base + '/v1/models')).json(), { data: [], has_more: false, first_id: null, last_id: null });
+  assert.deepEqual(await (await authorizedFetch(base + '/v1/models')).json(), { data: [], has_more: false, first_id: null, last_id: null });
 });
 
 test('expired capability proof at final dispatch check cannot reach the backend', async t => {
@@ -297,7 +300,7 @@ test('expired capability proof at final dispatch check cannot reach the backend'
   const validate = f.controller.validateCandidate.bind(f.controller);
   f.controller.validateCandidate = async candidate => { const valid = await validate(candidate); f.clock.value += capabilityTTL; return valid; };
   const base = await server(t, createPoolRouter({ controller: f.controller, getClientKey: async () => 'synthetic', backendPort: Number(new URL(backend).port) }));
-  assert.equal((await fetch(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-sonnet-5-5', messages: [] }) })).status, 429);
+  assert.equal((await authorizedFetch(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-sonnet-5-5', messages: [] }) })).status, 429);
   assert.equal(dispatched, 0);
 });
 

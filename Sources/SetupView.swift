@@ -50,7 +50,7 @@ struct SetupView: View {
             }
             HStack {
                 if model.busy { ProgressView().controlSize(.small); Text(L10n.text("setup.preparing")).foregroundStyle(.secondary) }
-                if model.result != nil { Button(L10n.text("action.showFinder"), action: model.reveal) }
+                if model.result?.ok == true { Button(L10n.text("action.showFinder"), action: model.reveal) }
                 Spacer()
                 Button(L10n.text("action.createInstallation"), action: model.create).buttonStyle(.borderedProminent)
                     .disabled(model.busy || model.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

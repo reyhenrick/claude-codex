@@ -4,7 +4,7 @@
 
 Aplicativo nativo para a barra de menus do macOS que prepara uma instalação separada do Claude e conecta suas contas do Codex. A interface reúne limites de assinatura, créditos extras, resets e a ordem de uso das contas.
 
-Esta árvore prepara a candidata **1.0.0, build 2**. Os pacotes e o feed de atualização desta candidata ainda não foram publicados. O código-fonte está em [reyhenrick/codex-accounts](https://github.com/reyhenrick/codex-accounts).
+Versão desta árvore: **1.0.1, build 3**. O código-fonte e os downloads ficam em [reyhenrick/codex-accounts](https://github.com/reyhenrick/codex-accounts) e nas [releases](https://github.com/reyhenrick/codex-accounts/releases).
 
 ## O que faz
 
@@ -21,7 +21,7 @@ A gestão acontece na interface nativa. A conexão de conta abre a autorização
 
 O catálogo fixo em [Bridge/model-catalog.mjs](Bridge/model-catalog.mjs) oferece GPT-6.1 Sol, GPT-6 Luna e GPT-6 Astra. Sol e Astra têm variantes Normal, Fast e Ultrafast; Luna tem Normal e Fast. O bridge consulta as capacidades autenticadas de cada conta e só encaminha uma variante a contas que a anunciam. Normal solicita `service_tier: default`, Fast solicita `priority`, e Ultrafast solicita `ultrafast`. A disponibilidade e o consumo efetivos pertencem ao serviço OpenAI; solicitar Fast não garante uma prioridade efetivamente aplicada pelo fornecedor. Novos modelos entram por atualizações do aplicativo.
 
-A instalação prepara esforço `xhigh`, Workflows e Ultracode no Claude Code. O launcher atualiza os nomes GPT e as velocidades disponíveis antes de abrir uma instância separada nova. Uma instância já aberta é apenas trazida para frente: reabra-a para atualizar o menu de modelos após mudar as contas ou seus acessos. A escolha de conta no gerenciador vale para a próxima solicitação, sem depender dessa reabertura. Uma opção antiga sem acesso confirmado é recusada, sem troca silenciosa de velocidade. A consulta local de capacidades usa cache de até 60 segundos, invalidado na reconexão; a disponibilidade ainda pode mudar no fornecedor depois da consulta.
+A instalação habilita Workflows e mantém o seletor nativo de esforço: Low, Medium, High, Extra High e Max. Ela não impõe `xhigh` nem Ultracode como padrão global. Uma escolha explícita é preservada na chamada; Max continua sendo uma escolha da sessão, conforme o comportamento do Claude. O launcher atualiza os nomes GPT e as velocidades disponíveis antes de abrir uma instância separada nova. Uma instância já aberta é apenas trazida para frente: reabra-a para atualizar o menu de modelos após mudar as contas ou seus acessos. A escolha de conta no gerenciador vale para a próxima solicitação, sem depender dessa reabertura. Uma opção antiga sem acesso confirmado é recusada, sem troca silenciosa de velocidade. A consulta local de capacidades usa cache de até 60 segundos, invalidado na reconexão; a disponibilidade ainda pode mudar no fornecedor depois da consulta.
 
 ## Requisitos e build
 
@@ -104,16 +104,16 @@ Cada tentativa é registrada com um identificador persistente. Se a resposta fic
 
 O atualizador funciona quando o Claude Codex está em `/Applications` ou `~/Applications`. As consultas automáticas estão habilitadas por padrão, com intervalo diário. **Instalar atualizações automaticamente** começa desativado e pode ser habilitado nas opções do app; também há uma ação para buscar atualizações manualmente.
 
-Antes de instalar, o aplicativo prepara o serviço para concluir chamadas ao modelo, resets, autorizações e alterações de conta já em andamento. A instalação aguarda a liberação dessas operações. A recuperação do serviço faz parte do fluxo de atualização.
+Antes de instalar, o aplicativo prepara o serviço para concluir chamadas ao modelo, resets, autorizações e alterações de conta já em andamento. A instalação aguarda a liberação dessas operações. A recuperação do serviço faz parte do fluxo de atualização e possui um processo independente para os casos em que o instalador não relança a interface. Desativar instalações automáticas vale para atualizações futuras; se uma atualização já foi baixada e preparada, o aplicativo avisa que ela será instalada ao sair, conforme o comportamento do Sparkle.
 
-O feed configurado aponta para o `appcast.xml` das [releases do projeto](https://github.com/reyhenrick/codex-accounts/releases). A candidata desta árvore ainda não tem uma publicação correspondente. Configurar o endereço não torna uma atualização disponível.
+O feed configurado aponta para o `appcast.xml` das [releases do projeto](https://github.com/reyhenrick/codex-accounts/releases). Cada versão distribuída inclui o feed e o ZIP assinados, além dos metadados e hashes dos artefatos.
 
 O app exige assinaturas Ed25519 válidas no feed e no ZIP antes da extração. A chave pública integra o aplicativo; a chave privada de publicação permanece no Keychain do mantenedor. A assinatura de atualização autentica os artefatos e é registrada separadamente da assinatura Apple e da notarização.
 
 ## Dados locais e privacidade
 
 - As credenciais OAuth são geridas pelo CLIProxyAPI em `~/Library/Application Support/Claude Codex Bridge/pool/auth`.
-- O diretório privado usa permissão `0700`; credenciais, chaves locais, preferências de consumo e recibos de reset usam arquivos privados.
+- O gateway exige uma chave aleatória por runtime, lida somente dos arquivos privados do usuário. Apenas a verificação mínima de saúde é pública no loopback. O diretório privado usa permissão `0700`; credenciais, chaves locais, preferências de consumo e recibos de reset usam arquivos privados.
 - A interface recebe identidade da conta, plano, limites e estados. Tokens OAuth e a chave de gerenciamento não são enviados à interface.
 - O gateway escuta somente em `127.0.0.1:18765`; o serviço interno usa `127.0.0.1:18768` e exige uma chave aleatória. As ações locais conferem host, origem e cabeçalho de ação.
 - O gateway atende aplicativos locais do mesmo usuário. Não é uma fronteira de isolamento contra outro processo local malicioso; não deve ser exposto em uma interface pública ou túnel.
@@ -129,18 +129,7 @@ Execute a partir da raiz do repositório:
 
 ```sh
 npm --prefix Bridge ci --ignore-scripts
-npm --prefix Bridge test
-python3 Scripts/check-localizations.py
-mkdir -p build/tests
-xcrun swiftc -parse-as-library Sources/Localization.swift Tests/LocalizationTests.swift -o build/tests/localization-tests
-build/tests/localization-tests Resources
-xcrun swiftc -parse-as-library Sources/UpdatePolicy.swift Tests/UpdatePolicyTests.swift -o build/tests/update-policy-tests
-build/tests/update-policy-tests
-xcrun swiftc Launcher/ProfileCatalog.swift Tests/ProfileCatalogTests.swift -o build/tests/profile-catalog-tests
-build/tests/profile-catalog-tests
-xcrun swiftc Scripts/verify-update.swift -o build/tests/verify-update
-xcrun swiftc -parse-as-library Tests/UpdateSignatureTests.swift -o build/tests/update-signature-tests
-build/tests/update-signature-tests build/tests/verify-update
+./Scripts/test.sh
 ```
 
 Os testes do bridge usam contas, credenciais e respostas sintéticas. Exercitam roteamento, cotas, créditos, resets, concorrência, streams, configuração e migração. As verificações de idioma conferem a paridade dos catálogos, chaves duplicadas, placeholders, referências estáticas no Swift e a seleção/fallback de idioma pelo Foundation. Os testes do atualizador cobrem a preparação do serviço e a validação criptográfica de artefatos sintéticos.
@@ -165,6 +154,7 @@ Esses testes locais não comprovam toda a interface do Claude, a retomada visual
 - `Sources/`: aplicativo AppKit/SwiftUI, localização e atualização.
 - `Resources/`: catálogos de idioma e recursos distribuídos.
 - `Launcher/`: abertura da instalação separada e processo do serviço.
+- `Recovery/`: recuperação independente do aplicativo e do serviço após uma atualização.
 - `Bridge/`: roteamento, contas, cotas, créditos, resets, preparação e migração local.
 - `Scripts/`: dependências verificadas, ícone, idiomas, empacotamento e assinatura.
 - `Tests/`: testes Foundation e políticas de atualização.

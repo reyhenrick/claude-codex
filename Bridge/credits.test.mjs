@@ -4,7 +4,10 @@ import http from 'node:http';
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { PoolController, ManagementClient, evaluateQuota } from './pool-controller.mjs';
-import { createPoolRouter } from './pool-router.mjs';
+import { createPoolRouter as authenticatedRouter } from './pool-router.mjs';
+const ingressKey = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';
+const createPoolRouter = options => authenticatedRouter({ ...options, getIngressKey: async () => ingressKey });
+const authorizedFetch = (url, options = {}) => globalThis.fetch(url, { ...options, headers: { authorization: `Bearer ${ingressKey}`, ...options.headers } });
 const root = fileURLToPath(new URL('../build/credits-fixtures/', import.meta.url));
 await mkdir(root, { recursive: true });
 const emails = ['first@example.test', 'second@example.test'];
@@ -119,7 +122,7 @@ test('request-triggered automatic reset dispatches once after recovery without i
  const f=await fixture({automatic:[emails[0]]});f.values.set(emails[0],usage(96,{resets:1,applicable:1}));
  const dispatched=[];const backend=await server(t,http.createServer(async(req,res)=>{const chunks=[];for await(const chunk of req)chunks.push(chunk);dispatched.push(JSON.parse(Buffer.concat(chunks)).model);res.writeHead(200,{'content-type':'application/json'});res.end('{"ok":true}');}));
  const base=await server(t,createPoolRouter({controller:f.controller,backendPort:Number(new URL(backend).port),getClientKey:async()=>'synthetic'}));
- const response=await fetch(base+'/v1/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'claude-sonnet-5-5',messages:[]})});
+ const response=await authorizedFetch(base+'/v1/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'claude-sonnet-5-5',messages:[]})});
  assert.equal(response.status,200);assert.equal(f.consumed.length,1);assert.deepEqual(dispatched,['conta-01/gpt-6.1-sol']);
  assert.equal((await f.controller.status()).accounts[0].resets.operation.verified,true);
 });
@@ -151,7 +154,7 @@ test('HTTP reset is origin protected and the updater drain blocks new work witho
  const f=await fixture();let upstreamResponse;
  const backend=await server(t,http.createServer(async(req,res)=>{for await(const chunk of req){}res.writeHead(200,{'content-type':'text/event-stream'});res.write('event: started\ndata: {}\n\n');upstreamResponse=res;}));
  const base=await server(t,createPoolRouter({controller:f.controller,backendPort:Number(new URL(backend).port),getClientKey:async()=>'synthetic'}));
- const send=(path,body={},origin=base)=>fetch(base+path,{method:'POST',headers:{'content-type':'application/json',origin,'x-bridge-action':'accounts'},body:JSON.stringify(body)});
+ const send=(path,body={},origin=base)=>authorizedFetch(base+path,{method:'POST',headers:{'content-type':'application/json',origin,'x-bridge-action':'accounts'},body:JSON.stringify(body)});
  assert.equal((await send('/_bridge/reset',{email:emails[0],revision:0},'https://untrusted.example')).status,403);
  assert.equal((await send('/_bridge/reset',{email:emails[0],revision:0,unexpected:true})).status,400);
  const first=await send('/v1/messages',{model:'claude-sonnet-5-5',stream:true,messages:[{role:'user',content:'synthetic'}]});const reader=first.body.getReader();await reader.read();
@@ -159,7 +162,7 @@ test('HTTP reset is origin protected and the updater drain blocks new work witho
  assert.equal((await send('/v1/messages',{model:'claude-sonnet-5-5',messages:[]})).status,503);assert.equal((await send('/_bridge/reset',{email:emails[0],revision:0})).status,503);
  upstreamResponse.end('event: stopped\ndata: {}\n\n');while(!(await reader.read()).done){}
  const ready=await(await send('/_bridge/update/drain')).json();assert.equal(ready.ready,true);
- await send('/_bridge/update/resume');assert.equal((await(await fetch(base+'/healthz')).json()).draining,false);
+ await send('/_bridge/update/resume');assert.equal((await(await authorizedFetch(base+'/healthz')).json()).draining,false);
 });
 test('reset transport binds account header and sends the persisted idempotency body without a token in the returned payload',async()=>{
  const runtimeDir=await mkdtemp(root+'transport-');await writeFile(runtimeDir+'/management.key','synthetic-local-key');const calls=[];
@@ -174,23 +177,23 @@ test('an inference whose body is incomplete cannot enter upstream after update d
  const backend=await server(t,http.createServer((req,res)=>{hits++;res.end('{}');}));
  const base=await server(t,createPoolRouter({controller:f.controller,backendPort:Number(new URL(backend).port),getClientKey:async()=>'synthetic'}));
  const body=JSON.stringify({model:'claude-sonnet-5-5',messages:[{role:'user',content:'synthetic'}]});
- let request;const result=new Promise((resolve,reject)=>{request=http.request(base+'/v1/messages',{method:'POST',headers:{'content-type':'application/json','content-length':Buffer.byteLength(body)}},res=>{res.resume();resolve(res.statusCode);});request.on('error',reject);request.write(body.slice(0,15));});
+ let request;const result=new Promise((resolve,reject)=>{request=http.request(base+'/v1/messages',{method:'POST',headers:{authorization:`Bearer ${ingressKey}`,'content-type':'application/json','content-length':Buffer.byteLength(body)}},res=>{res.resume();resolve(res.statusCode);});request.on('error',reject);request.write(body.slice(0,15));});
  await new Promise(r=>setImmediate(r));
- const drain=await fetch(base+'/_bridge/update/drain',{method:'POST',headers:{'content-type':'application/json',origin:base,'x-bridge-action':'accounts'},body:'{}'});assert.equal((await drain.json()).ready,true);
+ const drain=await authorizedFetch(base+'/_bridge/update/drain',{method:'POST',headers:{'content-type':'application/json',origin:base,'x-bridge-action':'accounts'},body:'{}'});assert.equal((await drain.json()).ready,true);
  request.end(body.slice(15));assert.equal(await result,503);assert.equal(hits,0);
 });
 test('update drain waits for an OAuth start before its pending state is persisted',async t=>{
  const f=await fixture();const started=deferred(),gate=deferred();
  f.management.startLogin=async()=>{started.resolve();await gate.promise;return{state:'synthetic-oauth',url:'https://auth.openai.com/oauth/authorize?state=synthetic-oauth'};};
  const base=await server(t,createPoolRouter({controller:f.controller,getClientKey:async()=>'synthetic'}));
- const send=(path,body)=>fetch(base+path,{method:'POST',headers:{'content-type':'application/json',origin:base,'x-bridge-action':'accounts'},body:JSON.stringify(body)});
+ const send=(path,body)=>authorizedFetch(base+path,{method:'POST',headers:{'content-type':'application/json',origin:base,'x-bridge-action':'accounts'},body:JSON.stringify(body)});
  const connecting=send('/_bridge/connect',{email:'third@example.test'});await started.promise;
  const draining=send('/_bridge/update/drain',{});
  await new Promise(r=>setImmediate(r));
- const whileConnecting=await(await fetch(base+'/healthz')).json();assert.equal(whileConnecting.pending_actions,1);
+ const whileConnecting=await(await authorizedFetch(base+'/healthz')).json();assert.equal(whileConnecting.pending_actions,1);
  gate.resolve();assert.equal((await connecting).status,200);
  const drain=await(await draining).json();assert.equal(drain.ready,false);assert.equal(drain.pending_oauth,1);
- const health=await(await fetch(base+'/healthz')).json();assert.equal(health.pending_oauth,1);assert.equal(health.pending_actions,0);
+ const health=await(await authorizedFetch(base+'/healthz')).json();assert.equal(health.pending_oauth,1);assert.equal(health.pending_actions,0);
 });
 
 test('a fresh subscription observation supersedes an older exhausted observation during credit selection',async()=>{
@@ -242,17 +245,17 @@ test('a candidate whose credits disappear is skipped before dispatch so another 
  const validate=f.controller.validateCandidate.bind(f.controller);let changed=false;
  f.controller.validateCandidate=async account=>{if(!changed&&account.consumption_source==='credits'){changed=true;f.values.set(emails[0],exhausted('0'));await f.controller.quota((await f.controller.credentials())[0],{force:true});}return validate(account);};
  const base=await server(t,createPoolRouter({controller:f.controller,backendPort:Number(new URL(backend).port),getClientKey:async()=>'synthetic'}));
- const response=await fetch(base+'/v1/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'claude-sonnet-5-5',messages:[]})});
+ const response=await authorizedFetch(base+'/v1/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'claude-sonnet-5-5',messages:[]})});
  assert.equal(response.status,200);assert.deepEqual(dispatched,['conta-02/gpt-6.1-sol']);
 });
 test('the update drain survives a replacement service until an explicit resume',async t=>{
  const f=await fixture();await f.controller.setUpdateDrain(true);
  const replacement=new PoolController({runtimeDir:f.runtimeDir,management:f.management});replacement.pausedForUpdate=(await replacement.readState()).update_draining;
  const base=await server(t,createPoolRouter({controller:replacement,getClientKey:async()=>'synthetic'}));
- const send=(path,body={})=>fetch(base+path,{method:'POST',headers:{'content-type':'application/json',origin:base,'x-bridge-action':'accounts'},body:JSON.stringify(body)});
- assert.equal((await(await fetch(base+'/healthz')).json()).draining,true);
+ const send=(path,body={})=>authorizedFetch(base+path,{method:'POST',headers:{'content-type':'application/json',origin:base,'x-bridge-action':'accounts'},body:JSON.stringify(body)});
+ assert.equal((await(await authorizedFetch(base+'/healthz')).json()).draining,true);
  assert.equal((await send('/v1/messages',{model:'claude-sonnet-5-5',messages:[]})).status,503);
  assert.equal((await send('/_bridge/connect',{email:'new@example.test'})).status,503);
  await send('/_bridge/update/resume');assert.equal((await replacement.readState()).update_draining,false);
- for(const path of ['/','/accounts','/monitor'])assert.equal((await fetch(base+path)).status,404);
+ for(const path of ['/','/accounts','/monitor'])assert.equal((await authorizedFetch(base+path)).status,404);
 });

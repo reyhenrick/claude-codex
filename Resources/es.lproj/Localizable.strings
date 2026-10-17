@@ -24,7 +24,7 @@
 "action.applyResetMenu" = "Aplicar reset ahora";
 "action.cancel" = "Cancelar";
 "action.checkAttempt" = "Verificar intento";
-"action.checkAttemptMenu" = "Verificar intento…";
+"action.checkAttemptMenu" = "Verificar intento";
 "action.choose" = "Elegir…";
 "action.connect" = "Conectar cuenta";
 "action.continueBrowser" = "Continuar en el navegador";
@@ -109,7 +109,7 @@
 "reset.available" = "Hay un reset disponible para aplicar.";
 "reset.checkForAccount" = "Verificar reset de {0}";
 "reset.confirmedTitle" = "Reset confirmado";
-"reset.identityChanged" = "La identidad de la cuenta cambió. Vuelve a conectarla para comprobar el reset.";
+"reset.identityChanged" = "La identidad de la cuenta no coincide con el intento pendiente. Revisa ese intento antes de cambiar la cuenta; no se enviará un nuevo reset.";
 "reset.noCreditMessage" = "No hay ningún reset disponible en esta cuenta ahora.";
 "reset.noneAvailable" = "No hay resets disponibles en esta cuenta.";
 "reset.notApplicable" = "Aún no aplicable";
@@ -149,7 +149,7 @@
 "setup.migrationDescription" = "Copia los datos locales compatibles a la nueva instalación. Los originales permanecen en su lugar; un informe detalla los elementos omitidos.";
 "setup.migrationSummary" = "Migración: {0} archivos copiados, {1} omitidos.";
 "setup.migrationWarnings" = "Algunos elementos requieren atención. Revisa el informe de migración.";
-"setup.modelsDescription" = "GPT-6.1 Sol, GPT-6 Luna y GPT-6 Astra, con las velocidades disponibles. Esfuerzo Extra High y Workflows/Ultracode. Vuelve a abrir la instalación separada para actualizar su menú de modelos.";
+"setup.modelsDescription" = "GPT-6.1 Sol, GPT-6 Luna y GPT-6 Astra, con las velocidades disponibles, selector nativo de esfuerzo y Workflows. Vuelve a abrir la instalación separada para actualizar su menú de modelos.";
 "setup.officialApp" = "Aplicación oficial instalada";
 "setup.preparing" = "Preparando…";
 "setup.serviceReady" = "Servicio preparado. Conecta tus cuentas para empezar.";
@@ -177,3 +177,4 @@
 
 "launcher.connectionRequired" = "Conecta una cuenta primero";
 "launcher.connectAccounts" = "Abre Claude Codex y conecta una cuenta con acceso a un modelo compatible. Después, abre esta instalación de nuevo.";
+"updater.stagedOnQuit" = "Esta actualización ya está descargada y se instalará al salir. La instalación automática sigue desactivada para futuras actualizaciones.";

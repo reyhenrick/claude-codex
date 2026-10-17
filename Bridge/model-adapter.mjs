@@ -13,9 +13,6 @@ export function adaptMessage(value, prefix) {
   if (value.thinking?.type !== 'disabled' && effort !== undefined) {
     result.thinking = { ...value.thinking, type: 'adaptive' };
     delete result.thinking.budget_tokens;
-  } else if (!value.thinking && effort === undefined) {
-    result.thinking = { type: 'adaptive' };
-    result.output_config = { ...value.output_config, effort: 'xhigh' };
   }
   return result;
 }

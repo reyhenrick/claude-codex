@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { mkdir, readFile, writeFile, chmod, rename, lstat, rm } from 'node:fs/promises';
 import bcrypt from 'bcryptjs';
 import { models } from './model-catalog.mjs';
+import { ensureClientKey } from './client-auth.mjs';
 
 export const runtimeDirectory = () => process.env.CODEX_ACCOUNTS_RUNTIME || join(homedir(), 'Library', 'Application Support', 'Claude Codex Bridge', 'pool');
 export async function privateJSON(path, value) {
@@ -11,18 +12,64 @@ export async function privateJSON(path, value) {
   try { await writeFile(tmp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' }); await rename(tmp, path); }
   finally { await rm(tmp, { force: true }); }
 }
+function mayMatchManagedModel(matcher) {
+  if (typeof matcher?.protocol === 'string' && !['', 'codex'].includes(matcher.protocol.trim().toLowerCase())) return false;
+  if (typeof matcher?.name !== 'string') return true;
+  const pattern = [...matcher.name.trim()];
+  if (!pattern.length) return false;
+  return models.some(model => [false, true].some(prefixed => {
+    const digits = '0123456789';
+    const tokens = [...(prefixed ? [...'conta-', digits, digits, '/'] : []), ...model.target];
+    const pending = [[0, 0]], visited = new Set();
+    while (pending.length) {
+      const [patternIndex, tokenIndex] = pending.pop(), pair = `${patternIndex}:${tokenIndex}`;
+      if (visited.has(pair)) continue;
+      visited.add(pair);
+      if (patternIndex === pattern.length && tokenIndex === tokens.length) return true;
+      const character = pattern[patternIndex];
+      if (character === '*') pending.push([patternIndex + 1, tokenIndex]);
+      if (character === undefined || tokenIndex === tokens.length) continue;
+      if (character === '*' || tokens[tokenIndex].includes(character)) {
+        pending.push([character === '*' ? patternIndex : patternIndex + 1, tokenIndex + 1]);
+      }
+      if (prefixed && tokenIndex === 8 && (character === '*' || digits.includes(character))) {
+        pending.push([character === '*' ? patternIndex : patternIndex + 1, tokenIndex]);
+      }
+    }
+    return false;
+  }));
+}
+
+function validateFinalTierRules(payload) {
+  for (const kind of ['override-raw', 'filter']) {
+    const rules = payload[kind] ?? [];
+    if (!Array.isArray(rules)) throw new Error('As regras finais de modelos precisam ser revisadas.');
+    for (const rule of rules) {
+      const paths = kind === 'filter' ? rule.params : Object.keys(rule.params ?? {});
+      if (!Array.isArray(paths)) throw new Error('As regras finais de modelos precisam ser revisadas.');
+      const changesTier = paths.some(path => typeof path === 'string' && /^:?service_tier(?:\.|$)/.test(path.trim().replaceAll('\\', '')));
+      if (changesTier && (!Array.isArray(rule.models) || rule.models.some(mayMatchManagedModel))) {
+        throw new Error('Uma regra posterior altera a modalidade dos modelos gerenciados. Revise service_tier em override-raw ou filter.');
+      }
+    }
+  }
+}
 export function upgradeModelConfig(config) {
   const next = structuredClone(config);
   next.oauth ??= {};
   next.oauth['model-alias'] ??= {};
   const aliases = next.oauth['model-alias'].codex ?? [];
   if (!Array.isArray(aliases)) throw new Error('Os aliases existentes precisam ser revisados.');
+  if (aliases.some(alias => models.some(model => model.mode === 'normal' && model.target === alias?.alias && alias.name !== model.baseModel))) {
+    throw new Error('Um alias existente redireciona um modelo gerenciado para outro modelo.');
+  }
   const ownedAliases = models.filter(model => model.mode !== 'normal');
   next.oauth['model-alias'].codex = [
     ...aliases.filter(alias => !ownedAliases.some(model => model.target === alias.alias)),
     ...ownedAliases.map(model => ({ ...aliases.find(alias => alias.alias === model.target), name: model.baseModel, alias: model.target, fork: true })),
   ];
   next.requests ??= {}; next.requests.payload ??= {};
+  validateFinalTierRules(next.requests.payload);
   const overrides = next.requests.payload.override ?? [];
   if (!Array.isArray(overrides)) throw new Error('As regras de modelos existentes precisam ser revisadas.');
   const owned = matcher => matcher?.protocol === 'codex' && models.some(model => [model.target, `*${model.target}`].includes(matcher.name));
@@ -66,6 +113,7 @@ export async function ensureRuntime(runtimeDir = runtimeDirectory()) {
     if (config.server?.host !== '127.0.0.1' || config.server?.port !== 18768 || !config.server?.['commercial-mode'] || config.management?.['allow-remote'] || config.oauth?.['auth-dir'] !== join(runtimeDir, 'auth')) throw new Error('A configuração existente precisa ser revisada.');
     await readFile(join(runtimeDir, 'management.key')); await readFile(join(runtimeDir, 'accounts-state.json'));
     const upgraded = upgradeModelConfig(config);
+    await ensureClientKey(runtimeDir);
     if (JSON.stringify(upgraded) !== JSON.stringify(config)) await privateJSON(configPath, upgraded);
     return upgraded;
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -77,6 +125,7 @@ export async function ensureRuntime(runtimeDir = runtimeDirectory()) {
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
     await mkdir(join(runtimeDir, 'auth'), { mode: 0o700 });
+    await ensureClientKey(runtimeDir);
     const managementKey = randomBytes(40).toString('base64url');
     const config = makeConfig(runtimeDir, await bcrypt.hash(managementKey, 10), randomBytes(40).toString('base64url'));
     await writeFile(join(runtimeDir, 'management.key'), managementKey + '\n', { mode: 0o600, flag: 'wx' });

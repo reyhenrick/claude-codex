@@ -5,8 +5,12 @@ import { once } from 'node:events';
 import { mkdtemp, mkdir, writeFile, readFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { PoolController, evaluateQuota } from './pool-controller.mjs';
-import { createPoolRouter } from './pool-router.mjs';
+import { createPoolRouter as authenticatedRouter } from './pool-router.mjs';
+const ingressKey = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';
+const createPoolRouter = options => authenticatedRouter({ ...options, getIngressKey: async () => ingressKey });
+const authorizedFetch = (url, options = {}) => globalThis.fetch(url, { ...options, headers: { authorization: `Bearer ${ingressKey}`, ...options.headers } });
 import { adaptMessage } from './model-adapter.mjs';
+import { models } from './model-catalog.mjs';
 
 const root = fileURLToPath(new URL('../build/test-fixtures/', import.meta.url));
 await mkdir(root, { recursive: true });
@@ -36,7 +40,7 @@ const message = { model: 'claude-sonnet-5-5-fast', max_tokens: 256, output_confi
   { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'sum', input: { a: 17, b: 25 } }] },
   { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: '42' }] },
 ] };
-const post = (base, value = message, extra = {}) => fetch(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', ...extra }, body: JSON.stringify(value) });
+const post = (base, value = message, extra = {}) => authorizedFetch(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', ...extra }, body: JSON.stringify(value) });
 
 test('quota gate blocks exhausted paid-credit accounts, malformed results, and extra exhausted limits', () => {
   assert.equal(evaluateQuota(available()).eligible, true);
@@ -84,9 +88,23 @@ test('normal and Fast mapping keeps explicit effort and complete tool history', 
   const result = adaptMessage(message, 'conta-02');
   assert.equal(result.model, 'conta-02/gpt-6.1-sol-fast'); assert.equal(result.thinking.type, 'adaptive'); assert.equal(result.output_config.effort, 'xhigh');
   assert.deepEqual(result.messages, message.messages); assert.equal(message.thinking, undefined);
-  assert.equal(adaptMessage({ model: 'claude-opus-5-5', messages: [] }, 'conta-01').output_config.effort, 'xhigh');
+  assert.equal(adaptMessage({ model: 'claude-opus-5-5', messages: [] }, 'conta-01').output_config?.effort, undefined);
   assert.equal(adaptMessage({ ...message, thinking: { type: 'disabled' } }, 'conta-01').thinking.type, 'disabled');
   assert.throws(() => adaptMessage({ ...message, output_config: { effort: 'ultracode' } }, 'conta-01'));
+});
+
+test('every catalogue variant preserves all five native effort choices without forcing a default', () => {
+  for (const model of models) {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      const result = adaptMessage({ model: model.id, output_config: { effort }, messages: [] }, 'conta-01');
+      assert.equal(result.output_config.effort, effort);
+      assert.equal(result.thinking.type, 'adaptive');
+      assert.equal(result.model, `conta-01/${model.target}`);
+    }
+    const result = adaptMessage({ model: model.id, messages: [] }, 'conta-01');
+    assert.equal(result.output_config?.effort, undefined);
+    assert.equal(result.thinking, undefined);
+  }
 });
 
 test('a pre-stream 429 moves to the next eligible account, with the same Fast model and tool history', async t => {
@@ -96,7 +114,7 @@ test('a pre-stream 429 moves to the next eligible account, with the same Fast mo
   await start(t, upstream);
   const server = createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic-local-client-key' });
   const base = await start(t, server);
-  const response = await post(base, message, { authorization: 'Bearer native-placeholder', cookie: 'session=secret', 'x-api-key': 'should-not-forward', 'x-claude-code-session-id': 'session-test' });
+  const response = await post(base, message, { authorization: `Bearer ${ingressKey}`, cookie: 'session=secret', 'x-api-key': ingressKey, 'x-claude-code-session-id': 'session-test' });
   assert.equal(response.status, 200); assert.equal((await response.json()).content[0].text, '42'); assert.equal(response.headers.get('set-cookie'), null);
   assert.deepEqual(captures.map(c => c.body.model), ['conta-01/gpt-6.1-sol-fast', 'conta-02/gpt-6.1-sol-fast']);
   for (const c of captures) { assert.deepEqual(c.body.messages, message.messages); assert.equal(c.body.output_config.effort, 'xhigh'); assert.equal(c.headers.authorization, 'Bearer synthetic-local-client-key'); assert.equal(c.headers.cookie, undefined); assert.equal(c.headers['x-api-key'], undefined); assert.equal(c.headers['x-claude-code-session-id'], 'session-test'); }
@@ -114,21 +132,21 @@ test('cross-origin actions and invalid host are rejected; token counting does no
   const f = await fixture(t); let count = 0;
   const upstream = http.createServer(async (req, res) => { for await (const c of req) {} count++; res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"input_tokens":42}'); }); await start(t, upstream);
   const base = await start(t, createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic' }));
-  const unsafe = await fetch(base + '/_bridge/settings', { method: 'POST', headers: { origin: 'https://untrusted.example', 'content-type': 'application/json', 'x-bridge-action': 'accounts' }, body: '{}' }); assert.equal(unsafe.status, 403);
-  assert.equal((await fetch(base + '/_bridge/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 403);
+  const unsafe = await authorizedFetch(base + '/_bridge/settings', { method: 'POST', headers: { origin: 'https://untrusted.example', 'content-type': 'application/json', 'x-bridge-action': 'accounts' }, body: '{}' }); assert.equal(unsafe.status, 403);
+  assert.equal((await authorizedFetch(base + '/_bridge/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 403);
   const badHost = await new Promise((resolve, reject) => {
     const r = http.get(base + '/healthz', { headers: { host: 'untrusted.example' } }, response => { response.resume(); resolve(response.statusCode); }); r.on('error', reject);
   });
   assert.equal(badHost, 403);
-  assert.equal((await fetch(base + '/v8/management/credentials')).status, 404);
-  const tokens = await fetch(base + '/v1/messages/count_tokens', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(message) }); assert.equal(tokens.status, 200); assert.deepEqual(await tokens.json(), { input_tokens: 42 }); assert.equal(f.calls.length, 0); assert.equal(count, 1);
+  assert.equal((await authorizedFetch(base + '/v8/management/credentials')).status, 404);
+  const tokens = await authorizedFetch(base + '/v1/messages/count_tokens', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(message) }); assert.equal(tokens.status, 200); assert.deepEqual(await tokens.json(), { input_tokens: 42 }); assert.equal(f.calls.length, 0); assert.equal(count, 1);
 });
 
 test('disconnect cancels upstream streaming and never replays a started response', async t => {
   const f = await fixture(t); let calls = 0; let closed; const closedPromise = new Promise(r => { closed = r; });
   const upstream = http.createServer(async (req, res) => { for await (const c of req) {} calls++; res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('event: content_block_delta\ndata: {"delta":{"text":"first"}}\n\n'); res.on('close', closed); }); await start(t, upstream);
   const base = await start(t, createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic' }));
-  const abort = new AbortController(); const response = await fetch(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...message, stream: true }), signal: abort.signal });
+  const abort = new AbortController(); const response = await authorizedFetch(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...message, stream: true }), signal: abort.signal });
   const reader = response.body.getReader(); assert.match(new TextDecoder().decode((await reader.read()).value), /first/); abort.abort();
   await Promise.race([closedPromise, new Promise((_, reject) => { const timer=setTimeout(()=>reject(Error('upstream was not cancelled')),1500);timer.unref(); })]); assert.equal(calls, 1);
 });
@@ -164,6 +182,36 @@ test('expired or mismatched login never replaces an existing account and can be 
   await f.controller.cancelConnection(); assert.equal(cancelled, true); assert.equal((await f.controller.status()).connection, null);
   f.management.loginStatus = async () => ({ status: 'error', error: 'expired' });
   await f.controller.connect(emails[0]); assert.match((await f.controller.status()).connection.error, /expirou/);
+});
+
+test('OAuth completion rejects the wrong account even when the requested account refreshed concurrently', async t => {
+  const f = await fixture(t); let completed = false; const patched = [];
+  const credentials = f.management.credentials;
+  f.management.credentials = async () => (await credentials()).map((row, index) => ({ ...row, updated_at: completed && index < 2 ? 'v2' : 'v1' }));
+  f.management.startLogin = async () => ({ state: 'synthetic-state', url: 'https://auth.openai.com/oauth/authorize?state=synthetic-state' });
+  f.management.loginStatus = async () => ({ status: completed ? 'ok' : 'wait' });
+  f.management.patchCredential = async (...args) => patched.push(args);
+  await f.controller.connect(emails[0]);
+  completed = true;
+  const status = await f.controller.status();
+  assert.match(status.connection.error, /não corresponde/);
+  assert.equal(patched.length, 0);
+  assert.equal((await f.controller.readState()).last_connection, undefined);
+});
+
+test('OAuth reconnect succeeds when only the requested existing credential changes', async t => {
+  const f = await fixture(t); let completed = false; const patched = [];
+  const credentials = f.management.credentials;
+  f.management.credentials = async () => (await credentials()).map((row, index) => ({ ...row, updated_at: completed && index === 0 ? 'v2' : 'v1' }));
+  f.management.startLogin = async () => ({ state: 'synthetic-state', url: 'https://auth.openai.com/oauth/authorize?state=synthetic-state' });
+  f.management.loginStatus = async () => ({ status: completed ? 'ok' : 'wait' });
+  f.management.patchCredential = async (name, fields) => patched.push({ name, fields });
+  await mkdir(f.runtimeDir + '/auth'); await writeFile(f.runtimeDir + '/auth/synthetic-0.json', '{}');
+  await f.controller.connect(emails[0]); completed = true;
+  const status = await f.controller.status();
+  assert.equal(status.connection, null); assert.equal(status.last_connection.email, emails[0]);
+  assert.equal(patched.length, 1); assert.equal(patched[0].name, 'synthetic-0.json');
+  assert.equal(status.accounts.length, 3);
 });
 
 test('disconnect waits for active requests, deletes only the selected credential and preserves other accounts', async t => {
@@ -215,7 +263,7 @@ test('changing account during an active stream affects the next inference withou
   const first = await post(base, { ...message, stream: true }); const reader = first.body.getReader();
   assert.match(new TextDecoder().decode((await reader.read()).value), /started on first account/);
   assert.equal(f.controller.activeAccounts.get(emails[0]), 1);
-  const changed = await fetch(base + '/_bridge/settings', {
+  const changed = await authorizedFetch(base + '/_bridge/settings', {
     method: 'POST', headers: { 'content-type': 'application/json', origin: base, 'x-bridge-action': 'accounts' },
     body: JSON.stringify({ revision: 0, mode: 'fixed', fixed_email: emails[1] }),
   });

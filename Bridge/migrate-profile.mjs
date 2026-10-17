@@ -10,14 +10,15 @@ const orgId = '00000000-0000-4000-8000-000000000001';
 const secretKey = /^(?:.*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|credential|oauth|authorization|cookie).*|.*(?:[_-]token|Token)|token|.*private[_-]?key|env|headers|customHeaders|auth|authentication)$/i;
 const forbiddenName = /(?:^\.env(?:\.|$)|credentials?|oauth|cookies?|keychain|auth(?:\.json|[-_])|id_(?:rsa|ed25519)|\.pem$|\.p12$|\.key$)/i;
 const textExtensions = new Set(['.md', '.txt', '.json', '.yaml', '.yml', '.toml', '.py', '.sh', '.js', '.mjs', '.ts']);
+const scriptExtensions = new Set(['.py', '.sh', '.js', '.mjs', '.ts']);
 const attachmentExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.txt', '.md', '.csv', '.json', '.html', '.svg']);
+const uriUserinfo = /\b([a-z][a-z0-9+.-]*:\/\/)[^\r\n/?#"'`<>]+@/gi;
 const secretPatterns = [
   /\bsk-(?:ant-(?:api\d+|oat\d+)-|proj-|svcacct-|or-v1-)?[A-Za-z0-9_-]{20,}/g,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AIza[A-Za-z0-9_-]{30,}|(?:AKIA|ASIA)[A-Z0-9]{16}|xox[baprs]-[A-Za-z0-9-]{16,}|(?:hf_|r8_)[A-Za-z0-9]{20,})\b/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
   /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,
   /\bBearer\s+[A-Za-z0-9_.~+\/-]{12,}={0,2}/gi,
-  /https?:\/\/[^\s/@:]+:[^\s/@]+@/gi,
 ];
 const desktopKeys = ['locale', 'scale', 'userThemeMode'];
 const preferenceKeys = ['menuBarEnabled', 'quickEntryShortcut', 'coworkBrowserToolsEnabled', 'coworkPreferredBrowser', 'sidebarMode', 'dockBounceEnabled', 'coworkWebSearchEnabled', 'keepAwakeEnabled', 'ccdScheduledTasksEnabled', 'coworkScheduledTasksEnabled'];
@@ -93,6 +94,7 @@ export function sanitizeMigrationValue(value, stats = { redactions: 0 }) {
       stats.knownPattern ??= new RegExp([...stats.knownSecrets].sort((a, b) => b.length - a.length).map(item => item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
       result = result.replace(stats.knownPattern, () => { stats.redactions++; return '[REDACTED_CREDENTIAL]'; });
     }
+    result = result.replace(uriUserinfo, (_match, scheme) => { stats.redactions++; return `${scheme}[REDACTED_CREDENTIAL]@`; });
     for (const pattern of secretPatterns) result = result.replace(pattern, () => { stats.redactions++; return '[REDACTED_CREDENTIAL]'; });
     return redactAssignments(result, stats);
   }
@@ -177,7 +179,7 @@ async function stableRead(root, path, limit = maxText) {
     if (buffer.length > limit) throw failure('migration.file_limit');
     const after = await inspect(root, path);
     if (fingerprint(await handle.stat({ bigint: true })) !== fingerprint(before) || fingerprint(after) !== fingerprint(before)) throw failure('migration.source_changed');
-    return { buffer, fingerprint: fingerprint(after) };
+    return { buffer, fingerprint: fingerprint(after), mode: Number(after.mode) };
   } finally { await handle.close(); }
 }
 
@@ -208,24 +210,30 @@ async function optionalJSON(root, file, report, category) {
   }
 }
 
-function makeReport() {
+function makeReport({ sanitizer = { redactions: 0, knownSecrets: new Set(), knownPattern: null }, budget = { bytes: 0, entries: 0 } } = {}) {
   const document = { version: 1, status: 'running', created_at: new Date().toISOString(), copied_files: 0, skipped_files: 0, redactions: 0, native_code_sessions: 0, portable_sessions: 0, limits: { entries: maxEntries, file_bytes: maxFile, text_file_bytes: maxText, transcript_line_bytes: maxLine, total_bytes: maxTotal }, warnings: [], files: [] };
-  const sanitizer = { redactions: 0, knownSecrets: new Set(), knownPattern: null };
   const warnings = new Set(), counted = new Set();
+  const record = entry => {
+    if (counted.has(entry.source_id)) return;
+    counted.add(entry.source_id);
+    document[entry.status === 'copied' ? 'copied_files' : 'skipped_files']++;
+    if (document.files.length < maxEntries) document.files.push(entry);
+    if (entry.reason) warnings.add(entry.reason);
+  };
   return {
     document,
     sanitizer,
-    budget: { bytes: 0, entries: 0 },
+    budget,
     warn(code) { warnings.add(code); },
     add(status, category, root, path, reason, target) {
-      const id = digest(category + '\0' + relative(root, path));
-      if (counted.has(id)) return;
-      counted.add(id);
-      document[status === 'copied' ? 'copied_files' : 'skipped_files']++;
-      if (document.files.length < maxEntries) document.files.push({ source_id: id, category, status, ...(reason ? { reason } : {}), ...(target ? { target } : {}) });
-      if (reason) warnings.add(reason);
+      record({ source_id: digest(category + '\0' + relative(root, path)), category, status, ...(reason ? { reason } : {}), ...(target ? { target } : {}) });
     },
     skip(category, root, path, code) { this.add('skipped', category, root, path, code); },
+    merge(child, discarded = false) {
+      const other = child.finish(discarded ? 'discarded' : 'completed');
+      for (const code of other.warnings) warnings.add(code);
+      for (const entry of other.files) record(discarded && entry.status === 'copied' ? { ...entry, status: 'skipped', reason: 'migration.skill_incomplete' } : entry);
+    },
     finish(status) { document.status = status; document.redactions = sanitizer.redactions; if (sanitizer.redactions) warnings.add('migration.credentials_redacted'); document.warnings = [...warnings].sort(); return document; },
   };
 }
@@ -255,14 +263,17 @@ async function walk(root, start, report, category, accept, maxDepth = 10, report
 
 async function copyText(root, source, destination, report, category, replacements = []) {
   try {
-    const { buffer } = await stableRead(root, source);
+    const { buffer, mode } = await stableRead(root, source);
     const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
     if (text.includes('\0')) throw failure('migration.unsupported_file');
+    const script = scriptExtensions.has(extname(source).toLowerCase()) || text.startsWith('#!');
     let sanitized = extname(source) === '.json' ? jsonBytes(sanitizeMigrationValue(JSON.parse(text), report.sanitizer)) : sanitizeMigrationValue(text, report.sanitizer);
+    if (script && sanitized !== text) throw failure('migration.script_redaction_omitted');
     for (const [from, to] of replacements) sanitized = sanitized.replaceAll(from, to);
+    if (script && sanitized !== text) throw failure('migration.script_path_rewrite_omitted');
     if (report.budget.bytes + Buffer.byteLength(sanitized) > maxTotal) throw failure('migration.total_limit');
     report.budget.bytes += Buffer.byteLength(sanitized);
-    await writeExclusive(destination, sanitized, ['.sh', '.py'].includes(extname(source)));
+    await writeExclusive(destination, sanitized, script && (mode & 0o111) !== 0);
     report.add('copied', category, root, source);
     return true;
   } catch (error) {
@@ -512,6 +523,43 @@ function safeMcpServers(value, report) {
   return result;
 }
 
+async function reusableSkills(sourceCode, targetCode, stageCode, report) {
+  const root = join(sourceCode, 'skills');
+  let entries;
+  try { const stat = await inspect(sourceCode, root); if (!stat.isDirectory()) throw failure('migration.unsafe_path'); entries = await readdir(root, { withFileTypes: true }); }
+  catch (error) { if (error.code !== 'ENOENT') report.skip('skills', sourceCode, root, error.code ?? 'migration.unreadable'); return; }
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (++report.budget.entries > maxEntries) { report.warn('migration.entry_limit'); return; }
+    const source = join(root, entry.name);
+    if (entry.isSymbolicLink() || forbiddenName.test(entry.name)) { report.skip('skills', sourceCode, source, entry.isSymbolicLink() ? 'migration.symlink_skipped' : 'migration.sensitive_file_excluded'); continue; }
+    if (!entry.isDirectory()) {
+      if (entry.isFile() && textExtensions.has(extname(source).toLowerCase())) await copyText(sourceCode, source, join(stageCode, 'skills', entry.name), report, 'skills', [[sourceCode, targetCode]]);
+      else report.skip('skills', sourceCode, source, 'migration.unsupported_file');
+      continue;
+    }
+    if (['node_modules', '.git', 'cache', 'debug', 'logs', 'telemetry', 'session-env'].includes(entry.name)) { report.skip('skills', sourceCode, source, 'migration.runtime_excluded'); continue; }
+    const child = makeReport({ sanitizer: report.sanitizer, budget: report.budget });
+    const files = await walk(sourceCode, source, child, 'skills', path => textExtensions.has(extname(path).toLowerCase()), 8, true);
+    const temporary = join(stageCode, '.skill-import-' + randomUUID());
+    let complete = files.includes(join(source, 'SKILL.md'));
+    complete &&= child.document.skipped_files === 0;
+    complete &&= report.budget.entries <= maxEntries;
+    try {
+      await mkdir(temporary, { mode: 0o700 });
+      for (const file of files) if (!await copyText(sourceCode, file, join(temporary, relative(source, file)), child, 'skills', [[sourceCode, targetCode]])) complete = false;
+      if (complete) {
+        const destination = join(stageCode, 'skills', entry.name);
+        await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+        await requireAbsent(destination);
+        await rename(temporary, destination);
+      }
+    } catch (error) { complete = false; child.warn(error.code?.startsWith('migration.') ? error.code : 'migration.copy_failed'); }
+    finally { await rm(temporary, { recursive: true, force: true }); }
+    if (!complete) child.warn('migration.skill_incomplete');
+    report.merge(child, !complete);
+  }
+}
+
 async function reusableContext(sourceData, sourceCode, targetCode, stageData, stageCode, report, configEntry) {
   if (configEntry) {
     await writeExclusive(join(stageData, 'config.json'), jsonBytes(sanitizeMigrationValue(pick(configEntry.value, desktopKeys), report.sanitizer)));
@@ -537,7 +585,8 @@ async function reusableContext(sourceData, sourceCode, targetCode, stageData, st
     catch (error) { if (error.code === 'ENOENT') continue; }
     await copyText(sourceCode, join(sourceCode, name), join(stageCode, name), report, 'instructions', [[sourceCode, targetCode]]);
   }
-  for (const category of ['skills', 'agents', 'rules', 'commands']) {
+  await reusableSkills(sourceCode, targetCode, stageCode, report);
+  for (const category of ['agents', 'rules', 'commands']) {
     const root = join(sourceCode, category);
     const files = await walk(sourceCode, root, report, category, path => textExtensions.has(extname(path).toLowerCase()), 8, true);
     for (const source of files) await copyText(sourceCode, source, join(stageCode, category, relative(root, source)), report, category, [[sourceCode, targetCode]]);

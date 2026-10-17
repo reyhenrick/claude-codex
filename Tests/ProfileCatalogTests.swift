@@ -24,20 +24,22 @@ final class CatalogueURLProtocol: URLProtocol, @unchecked Sendable {
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [CatalogueURLProtocol.self]
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
         CatalogueURLProtocol.payload = try JSONSerialization.data(withJSONObject: ["data":[["id":"claude-haiku-5-5", "display_name":"GPT-6 Luna", "anthropic_family_tier":"haiku", "is_family_default":true],["id":"anthropic.claude-haiku-5-5", "display_name":"GPT-6 Luna Fast"]]])
-        try await refreshProfileCatalog(dataDirectory: root, profileId: profileId, session: session)
+        if CommandLine.arguments.count > 1 { CatalogueURLProtocol.payload = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])) }
+        try await refreshProfileCatalog(dataDirectory: root, profileId: profileId, session: session, authorize: { $0.setValue("Bearer " + String(repeating:"S",count:64), forHTTPHeaderField:"Authorization") })
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
         let models = saved["inferenceModels"] as! [[String: Any]]
         precondition(models.count == 2 && models[0]["labelOverride"] as? String == "GPT-6 Luna")
         precondition(models[0]["anthropicFamilyTier"] as? String == "haiku" && models[1]["anthropicFamilyTier"] == nil)
         precondition(saved["alwaysStartWithDefaultModel"] as? Bool == false && saved["defaultModelEffort"] as? String == "xhigh")
+        precondition(saved["inferenceGatewayApiKey"] as? String == String(repeating:"S",count:64))
         let before = try Data(contentsOf: file)
         CatalogueURLProtocol.payload = Data("{\"data\":[]}".utf8)
-        do { try await refreshProfileCatalog(dataDirectory: root, profileId: profileId, session: session); fatalError("Empty capabilities must not launch") } catch is ProfileCatalogError {}
+        do { try await refreshProfileCatalog(dataDirectory: root, profileId: profileId, session: session, authorize: { $0.setValue("Bearer " + String(repeating:"S",count:64), forHTTPHeaderField:"Authorization") }); fatalError("Empty capabilities must not launch") } catch is ProfileCatalogError {}
         precondition((try? Data(contentsOf: file)) == before)
         CatalogueURLProtocol.status = 503
-        do { try await refreshProfileCatalog(dataDirectory: root, profileId: profileId, session: session); fatalError("Failed discovery must not launch") } catch is ProfileCatalogError {}
+        do { try await refreshProfileCatalog(dataDirectory: root, profileId: profileId, session: session, authorize: { $0.setValue("Bearer " + String(repeating:"S",count:64), forHTTPHeaderField:"Authorization") }); fatalError("Failed discovery must not launch") } catch is ProfileCatalogError {}
         precondition((try? Data(contentsOf: file)) == before)
-        do { try await refreshProfileCatalog(dataDirectory: root, profileId: "../elsewhere", session: session); fatalError("Invalid profile path") } catch is ProfileCatalogError {}
+        do { try await refreshProfileCatalog(dataDirectory: root, profileId: "../elsewhere", session: session, authorize: { $0.setValue("Bearer " + String(repeating:"S",count:64), forHTTPHeaderField:"Authorization") }); fatalError("Invalid profile path") } catch is ProfileCatalogError {}
         print("PASS: labels, aliases, family defaults, preserved settings, empty/error fail closed, safe profile identifier")
     }
 }

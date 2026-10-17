@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var subscription: AnyCancellable?
+    private var startupTask: Task<Void, Never>?
     private var preview: NSWindow?
     private var setupWindow: NSWindow?
     private let setupModel = SetupModel()
@@ -55,8 +56,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return false }
             return !self.model.applying && !self.model.refreshing && !self.setupModel.busy && self.model.confirmation == nil
         }
-        if !CommandLine.arguments.contains("--staging") { updater.start() }
-        model.start()
+        model.beforeServicePreparation = { [weak self] in
+            guard let self else { return false }
+            return await self.updater.start()
+        }
+        startupTask = Task { [weak self] in
+            guard let self else { return }
+            if CommandLine.arguments.contains("--staging") { model.start(); return }
+            while !Task.isCancelled {
+                if await updater.start() { model.start(); return }
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            }
+        }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53, self?.panel.isVisible == true, self?.model.confirmation == nil {
                 self?.hidePanel(); return nil
@@ -64,13 +75,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return event
         }
         if CommandLine.arguments.contains("--preview") { showPreview() }
-        else if CommandLine.arguments.contains("--show") || !UserDefaults.standard.bool(forKey: "hasShownWelcome") {
+        else if !CommandLine.arguments.contains("--update-recovery") && (CommandLine.arguments.contains("--show") || !UserDefaults.standard.bool(forKey: "hasShownWelcome")) {
             UserDefaults.standard.set(true, forKey: "hasShownWelcome"); showPanel()
         }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showPanel(); return true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { updater.terminationReply() }
     func applicationWillTerminate(_ notification: Notification) {
+        startupTask?.cancel()
         model.stop()
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }

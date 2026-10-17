@@ -3,10 +3,13 @@ import Foundation
 enum ProfileCatalogError: Error { case unavailable, invalidProfile, concurrentChange }
 
 /// Refresh only the generated gateway profile, before its isolated Claude starts.
-func refreshProfileCatalog(dataDirectory: String, profileId: String, session: URLSession = .shared) async throws {
+func refreshProfileCatalog(dataDirectory: String, profileId: String, session: URLSession = .shared, authorize: ((inout URLRequest) throws -> Void) = BridgeAuthorization.apply) async throws {
     guard UUID(uuidString: profileId) != nil else { throw ProfileCatalogError.invalidProfile }
     let url = URL(string: "http://127.0.0.1:18765/v1/models")!
     var request = URLRequest(url: url); request.timeoutInterval = 20; request.cachePolicy = .reloadIgnoringLocalCacheData
+    try authorize(&request)
+    guard let authorization = request.value(forHTTPHeaderField: "Authorization"), authorization.hasPrefix("Bearer "),
+          authorization.dropFirst(7).count == 64 else { throw ProfileCatalogError.unavailable }
     let (data, response) = try await session.data(for: request)
     guard let response = response as? HTTPURLResponse, response.statusCode == 200,
           let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -26,6 +29,7 @@ func refreshProfileCatalog(dataDirectory: String, profileId: String, session: UR
           profile["inferenceProvider"] as? String == "gateway",
           profile["inferenceGatewayBaseUrl"] as? String == "http://127.0.0.1:18765" else { throw ProfileCatalogError.invalidProfile }
     profile["inferenceModels"] = catalogue
+    profile["inferenceGatewayApiKey"] = String(authorization.dropFirst(7))
     let updated = try JSONSerialization.data(withJSONObject: profile, options: [.prettyPrinted, .sortedKeys])
     guard try Data(contentsOf: path) == previous else { throw ProfileCatalogError.concurrentChange }
     try updated.write(to: path, options: .atomic)

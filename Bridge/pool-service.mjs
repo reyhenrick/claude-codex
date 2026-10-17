@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { PoolController } from './pool-controller.mjs';
 import { createPoolRouter } from './pool-router.mjs';
 import { ensureRuntime, runtimeDirectory } from './runtime.mjs';
+import { readClientKey } from './client-auth.mjs';
 
 process.umask(0o077);
 const runtimeDir = runtimeDirectory();
@@ -20,7 +21,7 @@ const child = spawn(fileURLToPath(new URL('../bin/cli-proxy-api', import.meta.ur
 });
 const controller = new PoolController({ runtimeDir });
 controller.pausedForUpdate = (await controller.readState()).update_draining;
-const server = createPoolRouter({ controller, getClientKey: async () => {
+const server = createPoolRouter({ controller, getIngressKey: () => readClientKey(runtimeDir), getClientKey: async () => {
   const current = JSON.parse(await readFile(configPath, 'utf8'));
   const key = current.access?.['api-keys']?.[0];
   if (typeof key !== 'string' || !key) throw new Error('Missing local client key');

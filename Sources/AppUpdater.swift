@@ -8,14 +8,131 @@ private struct UpdateFailure: LocalizedError {
 }
 
 @MainActor
+private final class UpdateRecoverySupport {
+    let store = UpdateRecoveryStore()
+    private let application: URL
+    private let resources: URL
+
+    init(application: URL, resources: URL) {
+        self.application = application
+        self.resources = resources
+    }
+
+    func arm() async throws {
+        try store.prepareDirectory()
+        let record: UpdateRecoveryRecord
+        if let existing = try store.load() {
+            guard existing.owner == UpdateProcessIdentity.capture(getpid()), existing.applicationPath == application.path else {
+                throw UpdateRecoveryFailure.unsafeRecord
+            }
+            record = existing
+        } else {
+            var existingJob = stat()
+            guard lstat(store.jobURL.path, &existingJob) != 0, errno == ENOENT else { throw UpdateRecoveryFailure.unexpectedJob }
+            let installers = try await UpdateInstallerActivity.capture(application: application, userID: getuid())
+            guard let owner = UpdateProcessIdentity.capture(getpid()),
+                  let publicKey = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String else {
+                throw UpdateRecoveryFailure.unsafeRecord
+            }
+            record = UpdateRecoveryRecord(version: 1, id: UUID(), userID: getuid(), applicationPath: application.path,
+                                          publicUpdateKey: publicKey, owner: owner, installers: installers)
+            try store.validate(record)
+            let temporary = store.directory.appendingPathComponent(".UpdateRecovery.\(UUID().uuidString).tmp")
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try FileManager.default.copyItem(at: resources.appendingPathComponent("bin/UpdateRecovery"), to: temporary)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: temporary.path)
+            let signature = try await UpdateCommand.run("/usr/bin/codesign", ["--verify", "--strict", "--all-architectures", temporary.path])
+            guard signature.status == 0 else { throw UpdateRecoveryFailure.unsafeRecord }
+            var previous = stat()
+            if lstat(store.helperURL.path, &previous) == 0 {
+                guard previous.st_uid == getuid(), previous.st_mode & S_IFMT == S_IFREG else { throw UpdateRecoveryFailure.unsafeRecord }
+            } else if errno != ENOENT { throw UpdateRecoveryFailure.unsafeRecord }
+            guard rename(temporary.path, store.helperURL.path) == 0 else { throw UpdateRecoveryFailure.unsafeRecord }
+            try store.save(record)
+        }
+        var jobFile = stat()
+        if lstat(store.jobURL.path, &jobFile) == 0 {
+            try store.validateJobFile(record: record)
+        } else {
+            guard errno == ENOENT else { throw UpdateRecoveryFailure.unsafeRecord }
+            try FileManager.default.createDirectory(at: store.jobURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let plist: [String: Any] = ["Label": UpdateRecoveryStore.jobLabel, "ProgramArguments": store.jobArguments(record: record),
+                                        "RunAtLoad": true, "KeepAlive": ["SuccessfulExit": false], "ThrottleInterval": 30,
+                                        "ProcessType": "Background", "AssociatedBundleIdentifiers": [UpdateRecoveryStore.bundleIdentifier],
+                                        "StandardOutPath": "/dev/null", "StandardErrorPath": "/dev/null"]
+            try store.writePrivate(PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0), to: store.jobURL)
+        }
+        try Task.checkCancellation()
+        let current = try await UpdateCommand.run("/bin/launchctl", ["print", store.jobTarget])
+        if current.status == 113 {
+            let result = try await UpdateCommand.run("/bin/launchctl", ["bootstrap", "gui/\(getuid())", store.jobURL.path])
+            if result.status != 0 {
+                let raced = try await UpdateCommand.run("/bin/launchctl", ["print", store.jobTarget])
+                guard raced.status == 0 else { throw UpdateRecoveryFailure.commandFailed }
+                try validate(job: raced.output, record: record)
+            }
+        } else {
+            guard current.status == 0 else { throw UpdateRecoveryFailure.commandFailed }
+            try validate(job: current.output, record: record)
+        }
+        let kicked = try await UpdateCommand.run("/bin/launchctl", ["kickstart", store.jobTarget])
+        guard kicked.status == 0 else { throw UpdateRecoveryFailure.commandFailed }
+        for _ in 0..<20 {
+            let running = try await UpdateCommand.run("/bin/launchctl", ["print", store.jobTarget])
+            guard running.status == 0 else { throw UpdateRecoveryFailure.commandFailed }
+            try validate(job: running.output, record: record)
+            if let pid = try UpdateLaunchJob(output: running.output).pid, UpdateProcessIdentity.capture(pid) != nil { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw UpdateRecoveryFailure.commandFailed
+    }
+
+    func disarm() async throws {
+        guard let record = try store.load() else { return }
+        var file = stat()
+        if lstat(store.jobURL.path, &file) == 0 { try store.validateJobFile(record: record) }
+        else if errno != ENOENT { throw UpdateRecoveryFailure.unsafeRecord }
+        let current = try await UpdateCommand.run("/bin/launchctl", ["print", store.jobTarget])
+        if current.status == 0 {
+            try validate(job: current.output, record: record)
+            let result = try await UpdateCommand.run("/bin/launchctl", ["bootout", store.jobTarget])
+            if result.status != 0 {
+                let remaining = try await UpdateCommand.run("/bin/launchctl", ["print", store.jobTarget])
+                guard remaining.status == 113 else { throw UpdateRecoveryFailure.commandFailed }
+            }
+        } else if current.status != 113 { throw UpdateRecoveryFailure.commandFailed }
+        guard try store.load()?.id == record.id else { throw UpdateRecoveryFailure.unsafeRecord }
+        for path in [store.jobURL, store.statusURL, store.helperURL, store.recordURL] {
+            var information = stat()
+            if lstat(path.path, &information) != 0 {
+                if errno == ENOENT { continue }
+                throw UpdateRecoveryFailure.unsafeRecord
+            }
+            guard information.st_uid == getuid(), information.st_mode & S_IFMT == S_IFREG else { throw UpdateRecoveryFailure.unsafeRecord }
+            try FileManager.default.removeItem(at: path)
+        }
+        rmdir(store.directory.path)
+    }
+
+    private func validate(job output: String, record: UpdateRecoveryRecord) throws {
+        let job = try UpdateLaunchJob(output: output)
+        guard job.program == store.helperURL.path, job.arguments == store.jobArguments(record: record) else {
+            throw UpdateRecoveryFailure.unexpectedJob
+        }
+    }
+}
+
+@MainActor
 private final class UpdateBridge {
     private let label = "com.henrick.claude-codex-bridge"
     private let resources: URL
     private let session: URLSession
+    let recoverySupport: UpdateRecoverySupport
     private var target: String { "gui/\(getuid())/\(label)" }
 
     init(resources: URL) {
         self.resources = resources
+        recoverySupport = UpdateRecoverySupport(application: Bundle.main.bundleURL, resources: resources)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 10
         configuration.timeoutIntervalForResource = 10
@@ -34,6 +151,7 @@ private final class UpdateBridge {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("accounts", forHTTPHeaderField: "X-Bridge-Action")
         }
+        try BridgeAuthorization.apply(to: &request)
         let (data, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200,
               data.count <= 32768 else { throw UpdateFailure(key: "updater.preparationError") }
@@ -95,6 +213,15 @@ private final class UpdateBridge {
     }
 
     func recover() async throws {
+        if let record = try recoverySupport.store.load(), record.owner != UpdateProcessIdentity.capture(getpid()) {
+            while !UpdateInstallerActivity.mayRecover(current: UpdateProcessIdentity.capture(getpid()), owner: record.owner,
+                                                     ownerIsRunning: record.owner.isRunning,
+                                                     installersAreRunning: try await UpdateInstallerActivity.isRunning(record: record)) {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .seconds(1))
+                guard try recoverySupport.store.load()?.id == record.id else { throw UpdateRecoveryFailure.unsafeRecord }
+            }
+        }
         try await validateOwnership()
         let result = try await runSetup(["action": "service"])
         guard result.ok else { throw UpdateFailure(key: "updater.recoveryError") }
@@ -103,6 +230,7 @@ private final class UpdateBridge {
             do {
                 let state = try await readiness(action: "resume")
                 guard !state.draining else { throw UpdateFailure(key: "updater.recoveryError") }
+                try await recoverySupport.disarm()
                 return
             } catch { failure = error }
             try await Task.sleep(for: .seconds(1))
@@ -111,19 +239,7 @@ private final class UpdateBridge {
     }
 
     private func launchctl(_ arguments: [String]) async throws -> (status: Int32, output: String) {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process(), output = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-            process.arguments = arguments
-            process.standardOutput = output
-            process.standardError = FileHandle.nullDevice
-            process.terminationHandler = { process in
-                let data = output.fileHandleForReading.readDataToEndOfFile()
-                continuation.resume(returning: (process.terminationStatus, String(decoding: data, as: UTF8.self)))
-            }
-            do { try process.run() }
-            catch { process.terminationHandler = nil; continuation.resume(throwing: error) }
-        }
+        try await UpdateCommand.run("/bin/launchctl", arguments)
     }
 }
 
@@ -142,12 +258,13 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, @preconc
     private let gate = UpdateInstallGate()
     private var started = false
     private var automaticUpdateQueued = false
-    private var stagedUpdateMayInstall = false
+    @Published private var stagedUpdateMayInstall = false
     private var installationRequested = false
     private var terminationPending = false
     private var automaticGate = false
     private var preparationTask: Task<Void, Never>?
     private let recovery = UpdateRecoveryCoordinator()
+    private let startup = UpdateStartupCoordinator()
     private lazy var bridge = UpdateBridge(resources: Bundle.main.resourceURL!)
     private lazy var preparation = UpdateServicePreparation(operations: .init(
         localReady: { [weak self] in self?.canPrepare?() ?? true },
@@ -156,6 +273,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, @preconc
             UserDefaults.standard.set(value, forKey: AppUpdater.recoveryKey)
             UserDefaults.standard.synchronize()
         },
+        armRecovery: { [unowned self] in try await bridge.recoverySupport.arm() },
         drain: { [unowned self] in try await bridge.readiness(action: "drain") },
         poll: { [unowned self] in try await bridge.readiness() },
         stop: { [unowned self] in try await bridge.stop(localReady: { self.canPrepare?() ?? true }) },
@@ -174,15 +292,33 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, @preconc
         !recovery.isRunning && (canCheckForUpdates || (automaticUpdateQueued && gate.isWaiting && automaticGate))
     }
 
-    func start() {
-        guard !started, installed else { return }
-        started = true
-        let updater = controller.updater
-        updater.publisher(for: \.canCheckForUpdates).receive(on: RunLoop.main).assign(to: &$canCheckForUpdates)
-        updater.publisher(for: \.automaticallyDownloadsUpdates).receive(on: RunLoop.main).assign(to: &$automaticallyInstalls)
-        do { try updater.start() }
-        catch { lastError = L10n.text("updater.startError", error.localizedDescription) }
-        if UserDefaults.standard.bool(forKey: Self.recoveryKey) { recoverService(force: true) }
+    var pendingUpdateInstallsOnQuit: Bool { stagedUpdateMayInstall && !automaticallyInstalls }
+
+    func start() async -> Bool {
+        guard installed else { return true }
+        let ready = await startup.start(recover: { [weak self] in
+            guard let self else { return }
+            let record = try bridge.recoverySupport.store.load()
+            if UserDefaults.standard.bool(forKey: Self.recoveryKey) || record != nil {
+                try await preparation.recover(force: true)
+            }
+        }, onReady: { [weak self] in
+            guard let self, !started else { return }
+            lastError = nil
+            started = true
+            let updater = controller.updater
+            updater.publisher(for: \.canCheckForUpdates).receive(on: RunLoop.main).assign(to: &$canCheckForUpdates)
+            updater.publisher(for: \.automaticallyDownloadsUpdates).receive(on: RunLoop.main).assign(to: &$automaticallyInstalls)
+            do { try updater.start() }
+            catch { lastError = L10n.text("updater.startError", error.localizedDescription) }
+        }, onFailure: { [weak self] _ in
+            self?.lastError = L10n.text("updater.recoveryError")
+        })
+        if ready && preparation.recoveryRequired && preparationTask == nil && !preparation.prepared && !installationRequested && !recovery.isRunning {
+            recoverService(force: true)
+        }
+        await recovery.waitUntilFinished()
+        return ready && !preparation.recoveryRequired && !preparation.prepared && preparationTask == nil
     }
 
     func checkForUpdates() {
@@ -207,7 +343,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, @preconc
     }
 
     func terminationReply() -> NSApplication.TerminateReply {
-        if recovery.isRunning { return .terminateCancel }
+        if recovery.isRunning || startup.isRunning { return .terminateCancel }
         guard installationRequested || automaticUpdateQueued || stagedUpdateMayInstall || gate.isWaiting else { return .terminateNow }
         if preparation.prepared { return .terminateNow }
         guard !terminationPending else { return .terminateLater }

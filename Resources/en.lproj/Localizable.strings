@@ -24,7 +24,7 @@
 "action.applyResetMenu" = "Apply reset now";
 "action.cancel" = "Cancel";
 "action.checkAttempt" = "Check attempt";
-"action.checkAttemptMenu" = "Check attempt…";
+"action.checkAttemptMenu" = "Check attempt";
 "action.choose" = "Choose…";
 "action.connect" = "Connect account";
 "action.continueBrowser" = "Continue in browser";
@@ -109,7 +109,7 @@
 "reset.available" = "A reset is available to apply.";
 "reset.checkForAccount" = "Check reset for {0}";
 "reset.confirmedTitle" = "Reset confirmed";
-"reset.identityChanged" = "The account identity changed. Reconnect the account to check its reset.";
+"reset.identityChanged" = "The account identity no longer matches the pending attempt. Review that attempt before changing the account; no new reset will be sent.";
 "reset.noCreditMessage" = "No reset is currently available on this account.";
 "reset.noneAvailable" = "There are no resets available on this account.";
 "reset.notApplicable" = "Not applicable yet";
@@ -149,7 +149,7 @@
 "setup.migrationDescription" = "Copies supported local data into the new installation. The original data stays in place; a report lists skipped items.";
 "setup.migrationSummary" = "Migration: {0} files copied, {1} skipped.";
 "setup.migrationWarnings" = "Some items need attention. Check the migration report.";
-"setup.modelsDescription" = "GPT-6.1 Sol, GPT-6 Luna and GPT-6 Astra, with available speed modes. Extra High effort and Workflows/Ultracode. Reopen the separate installation to refresh its model menu.";
+"setup.modelsDescription" = "GPT-6.1 Sol, GPT-6 Luna and GPT-6 Astra, with available speed modes, native effort selection and Workflows. Reopen the separate installation to refresh its model menu.";
 "setup.officialApp" = "Installed official app";
 "setup.preparing" = "Preparing…";
 "setup.serviceReady" = "Service ready. Connect your accounts to get started.";
@@ -177,3 +177,4 @@
 
 "launcher.connectionRequired" = "Connect an account first";
 "launcher.connectAccounts" = "Open Claude Codex and connect an account with access to a supported model. Then open this installation again.";
+"updater.stagedOnQuit" = "This update is already downloaded and will install when you quit. Automatic installation remains off for future updates.";

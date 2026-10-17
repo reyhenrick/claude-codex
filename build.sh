@@ -29,13 +29,16 @@ for architecture in arm64 x86_64; do
         -F "$SPARKLE_DISTRIBUTION" -framework Sparkle -Xlinker -rpath -Xlinker '@executable_path/../Frameworks' \
         Sources/*.swift -o "$STAGING/ClaudeCodex-$architecture"
     xcrun --sdk macosx swiftc "${SWIFT_FLAGS[@]}" -framework AppKit \
-        Sources/Localization.swift Launcher/*.swift -o "$STAGING/ClaudeLauncher-$architecture"
+        Sources/Localization.swift Sources/BridgeAuthorization.swift Launcher/*.swift -o "$STAGING/ClaudeLauncher-$architecture"
     xcrun --sdk macosx clang -O2 -Wall -Wextra -Werror -isysroot "$SDK" -target "$architecture-apple-macos26.0" \
         Launcher/BridgeService.c -o "$STAGING/BridgeService-$architecture"
+    xcrun --sdk macosx swiftc "${SWIFT_FLAGS[@]}" -parse-as-library -framework AppKit \
+        Sources/UpdatePolicy.swift Recovery/main.swift -o "$STAGING/UpdateRecovery-$architecture"
 done
 xcrun lipo -create "$STAGING/ClaudeCodex-arm64" "$STAGING/ClaudeCodex-x86_64" -output "$APP/Contents/MacOS/ClaudeCodex"
 xcrun lipo -create "$STAGING/ClaudeLauncher-arm64" "$STAGING/ClaudeLauncher-x86_64" -output "$APP/Contents/Resources/bin/ClaudeLauncher"
 xcrun lipo -create "$STAGING/BridgeService-arm64" "$STAGING/BridgeService-x86_64" -output "$APP/Contents/Resources/bin/BridgeService"
+xcrun lipo -create "$STAGING/UpdateRecovery-arm64" "$STAGING/UpdateRecovery-x86_64" -output "$APP/Contents/Resources/bin/UpdateRecovery"
 for binary in node cli-proxy-api; do
     xcrun lipo -create "build/dependencies/arm64/$binary" "build/dependencies/x86_64/$binary" -output "$APP/Contents/Resources/bin/$binary"
 done
@@ -70,7 +73,7 @@ codesign "${SIGNING_ARGS[@]}" --preserve-metadata=entitlements "$SPARKLE_FRAMEWO
 codesign "${SIGNING_ARGS[@]}" "$SPARKLE_FRAMEWORK/Versions/B/Autoupdate"
 codesign "${SIGNING_ARGS[@]}" "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
 codesign "${SIGNING_ARGS[@]}" "$SPARKLE_FRAMEWORK"
-for binary in node cli-proxy-api ClaudeLauncher BridgeService; do
+for binary in node cli-proxy-api ClaudeLauncher BridgeService UpdateRecovery; do
     codesign "${SIGNING_ARGS[@]}" "$APP/Contents/Resources/bin/$binary"
 done
 codesign "${SIGNING_ARGS[@]}" "$APP"

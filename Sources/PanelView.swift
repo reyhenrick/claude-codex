@@ -109,7 +109,13 @@ struct AccountsPanel: View {
         }
     }
     @ViewBuilder private var errors: some View {
-        if let message = model.queryError { errorView(message) }
+        if let message = model.queryError {
+            errorView(message)
+            if model.snapshot != nil {
+                Button(L10n.text("action.restoreConnection"), action: model.restoreConnection)
+                    .buttonStyle(.bordered).disabled(model.applying || model.refreshing)
+            }
+        }
         if let message = model.actionError {
             HStack(alignment: .top, spacing: 6) {
                 errorView(message)
@@ -135,7 +141,7 @@ struct AccountsPanel: View {
                 } else if model.canContinueLogin { Button(L10n.text("action.continueLogin"), action: model.continueLogin) }
                 Spacer()
                 Button(L10n.text("action.cancel"), action: model.cancelConnection)
-            }.controlSize(.small).disabled(model.applying)
+            }.controlSize(.small).disabled(model.applying || model.refreshing)
         }.padding(10).background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
     }
     private var connectionForm: some View {
@@ -170,6 +176,9 @@ struct AccountsPanel: View {
                     Button(L10n.text("updater.show"), action: updater.checkForUpdates)
                         .controlSize(.small).disabled(!updater.canPerformUpdateAction)
                 }
+            }
+            if updater.pendingUpdateInstallsOnQuit {
+                Text(L10n.text("updater.stagedOnQuit")).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             HStack {
                 Button { model.showingConnectionForm = true } label: { Label(L10n.text("action.connect"), systemImage: "plus") }

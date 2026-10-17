@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ensureRuntime, privateJSON, runtimeDirectory } from './runtime.mjs';
 import { models } from './model-catalog.mjs';
+import { ensureClientKey, readClientKey } from './client-auth.mjs';
 import { migrateProfile, migrationOptions, resolveMigrationSource } from './migrate-profile.mjs';
 const run = promisify(execFile);
 export const serviceLabel = 'com.henrick.claude-codex-bridge';
@@ -48,18 +49,19 @@ export async function publishIsolatedInstallation({ managed, temporary, launcher
     throw error;
   }
 }
-export function profileConfig(catalog = models) {
+export function profileConfig(catalog = models, clientKey) {
+  if (typeof clientKey !== 'string' || !/^[A-Za-z0-9_-]{64}$/.test(clientKey)) throw new Error('A autenticação local não está preparada.');
   return {
     inferenceProvider: 'gateway', inferenceCredentialKind: 'static', inferenceGatewayBaseUrl: 'http://127.0.0.1:18765',
-    inferenceGatewayApiKey: 'local-codex-accounts', modelDiscoveryEnabled: false, modelCatalogEnabled: false,
+    inferenceGatewayApiKey: clientKey, modelDiscoveryEnabled: false, modelCatalogEnabled: false,
     inferenceModels: catalog.map(m => ({ name: m.id, labelOverride: m.label, maxEffort: 'max', ...(m.family ? { anthropicFamilyTier: m.family, isFamilyDefault: true } : {}) })),
-    defaultModelEffort: 'xhigh', alwaysStartWithDefaultModel: true,
+    alwaysStartWithDefaultModel: false,
     chatTabEnabled: true, isDesktopExtensionEnabled: true, userPluginMarketplacesEnabled: true, userPluginUploadsEnabled: true,
     disableBundledSkills: false, skillCreationEnabled: true, scheduledTasksEnabled: true, keepAwakeEnabled: true,
     autoModeEnabled: true, builtinBrowserEnabled: true,
   };
 }
-export async function configureGatewayProfile({ root, name, activate = true, catalog = models }) {
+export async function configureGatewayProfile({ root, name, activate = true, catalog = models, clientKey }) {
   if (typeof name !== 'string' || !name.trim() || name.length > 80) throw new Error('Informe um nome de perfil com até 80 caracteres.');
   const library = join(resolve(root), 'configLibrary');
   await mkdir(library, { recursive: true, mode: 0o700 });
@@ -80,7 +82,7 @@ export async function configureGatewayProfile({ root, name, activate = true, cat
   const nextMode = { ...modeConfig, deploymentMode: '3p' };
   let modeWritten = false;
   const id = randomUUID();
-  await privateJSON(join(library, `${id}.json`), profileConfig(catalog));
+  await privateJSON(join(library, `${id}.json`), profileConfig(catalog, clientKey ?? await readClientKey(runtimeDirectory())));
   try {
     let current = null;
     try { current = await readFile(metaPath, 'utf8'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -102,7 +104,8 @@ export async function configureGatewayProfile({ root, name, activate = true, cat
 }
 export async function availableProfileModels(fetchImpl = fetch) {
   try {
-    const response = await fetchImpl('http://127.0.0.1:18765/v1/models', { signal: AbortSignal.timeout(15000) });
+    const key = await readClientKey(runtimeDirectory());
+    const response = await fetchImpl('http://127.0.0.1:18765/v1/models', { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15000) });
     if (!response.ok) { await response.body?.cancel(); return []; }
     const body = await response.json();
     if (!Array.isArray(body.data)) return [];
@@ -117,9 +120,8 @@ export async function createIsolated({ name, source, base = join(homedir(), 'Lib
   const plistPath = join(source, 'Contents', 'Info.plist');
   const { stdout: identifier } = await run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', plistPath]);
   if (identifier.trim() !== 'com.anthropic.claudefordesktop') throw new Error('Selecione o aplicativo oficial Claude.app.');
-  await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', source]);
-  const signature = await run('/usr/bin/codesign', ['-d', '--verbose=4', source]);
-  if (!signature.stderr.includes('TeamIdentifier=Q6L2SF6YDW')) throw new Error('A assinatura do Claude não pertence ao fornecedor esperado.');
+  const officialRequirement = '=anchor apple generic and certificate leaf[subject.OU] = "Q6L2SF6YDW" and identifier "com.anthropic.claudefordesktop"';
+  await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '-R', officialRequirement, source]);
   const slug = randomUUID();
   const managed = join(base, slug), launcher = join(applications, `${name.trim()}.app`);
   await absent(launcher); await mkdir(base, { recursive: true, mode: 0o700 }); await mkdir(applications, { recursive: true });
@@ -129,14 +131,16 @@ export async function createIsolated({ name, source, base = join(homedir(), 'Lib
   let temporaryIdentity, migration;
   try {
     await run('/usr/bin/ditto', ['--norsrc', '--noextattr', source, join(managed, 'Claude.app')]);
-    await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', join(managed, 'Claude.app')]);
+    await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '-R', officialRequirement, join(managed, 'Claude.app')]);
     const data = join(managed, 'User Data'); await mkdir(data, { mode: 0o700 });
     migration = migrationSource ? await migrateProfile({ ...migrationSource, targetDataRoot: `${data}-3p`, targetCodeRoot: join(data, 'claude-code'), reportPath: join(base, `${slug}.migration.json`) }) : undefined;
     await mkdir(join(data, 'claude-code'), { recursive: true, mode: 0o700 });
     let codeSettings = {};
     try { codeSettings = JSON.parse(await readFile(join(data, 'claude-code', 'settings.json'), 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
-    await privateJSON(join(data, 'claude-code', 'settings.json'), { ...codeSettings, effortLevel: 'xhigh', enableWorkflows: true, ultracode: true });
+    delete codeSettings.ultracode;
+    await privateJSON(join(data, 'claude-code', 'settings.json'), { ...codeSettings, enableWorkflows: true });
+    await ensureClientKey(runtimeDirectory());
     const gatewayProfile = await configureGatewayProfile({ root: `${data}-3p`, name: 'Codex', activate: true, catalog: await availableProfileModels() });
     await mkdir(temporary, { mode: 0o700 }); temporaryIdentity = await lstat(temporary);
     await mkdir(join(temporary, 'Contents', 'MacOS'), { recursive: true });
@@ -164,26 +168,56 @@ export async function createIsolated({ name, source, base = join(homedir(), 'Lib
     throw error;
   }
 }
-export async function installService() {
-  await ensureRuntime();
-  const path = join(homedir(), 'Library', 'LaunchAgents', `${serviceLabel}.plist`);
-  const arguments_ = [join(resources, 'bin', 'BridgeService'), runtimeDirectory(), join(resources, 'bin', 'node'), join(resources, 'Bridge', 'pool-service.mjs')];
-  try {
-    const { stdout } = await run('/usr/bin/plutil', ['-extract', 'ProgramArguments', 'json', '-o', '-', path]);
+export async function installService({ homeDirectory = homedir(), resourceDirectory = resources, runtimeDir = runtimeDirectory(), runCommand = run, prepareRuntime = ensureRuntime } = {}) {
+  await prepareRuntime(runtimeDir);
+  const directory = join(homeDirectory, 'Library', 'LaunchAgents');
+  const path = join(directory, `${serviceLabel}.plist`);
+  const arguments_ = [join(resourceDirectory, 'bin', 'BridgeService'), runtimeDir, join(resourceDirectory, 'bin', 'node'), join(resourceDirectory, 'Bridge', 'pool-service.mjs')];
+  const domain = `gui/${process.getuid()}`, target = `${domain}/${serviceLabel}`;
+  if (arguments_.some(value => /[\r\n\0]/.test(value))) throw new Error('Os caminhos do serviço são inválidos.');
+  const ownershipError = () => new Error('Já existe outro serviço usando esta conexão. Migre-o antes de instalar o gerenciador.');
+  const validatePlist = async () => {
+    let info;
+    try { info = await lstat(path); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+    if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid()) throw ownershipError();
+    const { stdout } = await runCommand('/usr/bin/plutil', ['-extract', 'ProgramArguments', 'json', '-o', '-', path]);
     const previous = JSON.parse(stdout);
-    if (!Array.isArray(previous) || previous.length !== arguments_.length || previous.some((value, index) => value !== arguments_[index])) throw new Error('Já existe outro serviço usando esta conexão. Migre-o antes de instalar o gerenciador.');
-  } catch (error) {
-    try { await lstat(path); } catch (missing) { if (missing.code === 'ENOENT') error = null; }
-    if (error) throw error;
+    if (!Array.isArray(previous) || previous.length !== arguments_.length || previous.some((value, index) => value !== arguments_[index])) throw ownershipError();
+    const label = await runCommand('/usr/bin/plutil', ['-extract', 'Label', 'raw', '-o', '-', path]);
+    if (label.stdout.trim() !== serviceLabel) throw ownershipError();
+  };
+  const registeredJob = async () => {
+    let output;
+    try { ({ stdout: output } = await runCommand('/bin/launchctl', ['print', target])); }
+    catch (error) { if (error.code === 113) return null; throw error; }
+    const values = output.match(/(?:^|\n)\s*arguments = \{\n([\s\S]*?)\n\s*\}/)?.[1].split('\n').map(value => value.trim());
+    const program = output.match(/(?:^|\n)\s*program = (.+)(?:\n|$)/)?.[1].trim();
+    if (program !== arguments_[0] || !values || values.length !== arguments_.length || values.some((value, index) => value !== arguments_[index])) throw ownershipError();
+    return output;
+  };
+  await validatePlist();
+  const registered = await registeredJob();
+  await mkdir(directory, { recursive: true });
+  const temporary = join(directory, `.${serviceLabel}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${serviceLabel}</string><key>ProgramArguments</key><array>${arguments_.map(value => `<string>${xml(value)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer><key>AssociatedBundleIdentifiers</key><array><string>com.henrick.codex-accounts</string></array><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>`, { mode: 0o600, flag: 'wx' });
+    await runCommand('/usr/bin/plutil', ['-lint', temporary]);
+    await validatePlist();
+    await rename(temporary, path);
+  } finally { await rm(temporary, { force: true }); }
+  if (!registered) {
+    try { await runCommand('/bin/launchctl', ['bootstrap', domain, path]); }
+    catch (error) { if (!await registeredJob()) throw error; }
   }
-  await mkdir(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
-  await writeFile(path, `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${serviceLabel}</string><key>ProgramArguments</key><array>${arguments_.map(value => `<string>${xml(value)}</string>`).join('')}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer><key>AssociatedBundleIdentifiers</key><array><string>com.henrick.codex-accounts</string></array><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>`, { mode: 0o600 });
-  const domain = `gui/${process.getuid()}`;
-  try { await run('/bin/launchctl', ['print', `${domain}/${serviceLabel}`]); }
-  catch { await run('/bin/launchctl', ['bootstrap', domain, path]); }
-  await run('/bin/launchctl', ['kickstart', `${domain}/${serviceLabel}`]);
+  if (!await registeredJob()) throw new Error('O serviço não foi registrado. Tente restaurar a conexão.');
+  try { await runCommand('/bin/launchctl', ['kickstart', target]); }
+  catch (error) {
+    const current = await registeredJob();
+    if (!current || !/(?:^|\n)\s*pid = [1-9][0-9]*(?:\n|$)/.test(current)) throw error;
+  }
   return { path, code: 'setup.service_ready', message: 'Serviço preparado. Conecte suas contas para começar.' };
 }
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.umask(0o077);
   try {

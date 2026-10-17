@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile, readFile, readdir, lstat, rm, symlink, link, appendFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, writeFile, readFile, readdir, lstat, rm, symlink, link, appendFile } from 'node:fs/promises';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -92,7 +92,8 @@ test('allowlisted context migrates with credentials excluded and safe MCP refere
   await put(join(f.sourceCodeRoot, 'CLAUDE.md'), 'Instructions: api_key=' + token + '\nSYNTHETIC_DO_NOT_COPY\nRead ' + f.sourceCodeRoot + '/rules/careful.md');
   await put(join(f.sourceCodeRoot, 'skills', 'example', 'SKILL.md'), 'Use the example helper.');
   await put(join(f.sourceCodeRoot, 'skills', 'example', 'scripts', 'helper.py'), 'print("example")\n');
-  await put(join(f.sourceCodeRoot, 'skills', 'example', '.env'), 'API_KEY=SYNTHETIC_DO_NOT_COPY');
+  await put(join(f.sourceCodeRoot, 'skills', 'needs-auth', 'SKILL.md'), 'Run using the local .env file.');
+  await put(join(f.sourceCodeRoot, 'skills', 'needs-auth', '.env'), 'API_KEY=SYNTHETIC_DO_NOT_COPY');
   await put(join(f.sourceCodeRoot, 'projects', '-synthetic-project', 'memory', 'MEMORY.md'), 'Remember the project conventions.');
   await put(join(f.sourceCodeRoot, 'settings.json'), { theme: 'dark', effortLevel: 'max', ultracode: true, env: { CUSTOM_PASSWORD: 'SYNTHETIC_DO_NOT_COPY' }, hooks: { launch: 'secret hook' }, permissions: { defaultMode: 'bypassPermissions' }, enabledPlugins: { example: true } });
   await put(join(f.sourceCodeRoot, '.claude.json'), { oauthAccount: { accessToken: 'SYNTHETIC_DO_NOT_COPY' }, mcpServers: { local: { command: 'npx', args: ['-y', 'example'], env: { KEY: 'SYNTHETIC_DO_NOT_COPY' } }, remote: { url: 'https://example.com/mcp', type: 'http', headers: { authorization: token } }, unsafe: { command: 'node', args: ['--api-key', 'SYNTHETIC_DO_NOT_COPY'] } } });
@@ -108,6 +109,7 @@ test('allowlisted context migrates with credentials excluded and safe MCP refere
   assert.deepEqual(mcp.remote, { url: 'https://example.com/mcp', type: 'http' }); assert.equal(mcp.unsafe, undefined);
   assert.ok(summary.warnings.includes('migration.mcp_credentials_not_copied'));
   assert.equal(await readFile(join(f.targetCodeRoot, 'skills', 'example', 'scripts', 'helper.py'), 'utf8'), 'print("example")\n');
+  await assert.rejects(lstat(join(f.targetCodeRoot, 'skills', 'needs-auth')), { code: 'ENOENT' });
   assert.equal(await readFile(join(f.targetCodeRoot, 'projects', '-synthetic-project', 'memory', 'MEMORY.md'), 'utf8'), 'Remember the project conventions.');
 });
 
@@ -347,6 +349,91 @@ test('successful publication already has verified metadata and copies launcher l
   assert.deepEqual(JSON.parse(await readFile(join(managed, 'installation.json'))), metadata);
   assert.ok((await readFile(join(launcher, 'Contents', 'Resources', 'pt.lproj', 'Localizable.strings'), 'utf8')).includes('Não foi possível abrir'));
   await assert.rejects(lstat(temporary), { code: 'ENOENT' });
+});
+
+test('URI userinfo is redacted for every scheme, including username-only authorities', async t => {
+  const f = await fixture(t);
+  const uris = [
+    'postgres://db-user:opaque-pg-value@database.example/db',
+    'mysql://db-user:opaque-mysql-value@database.example/db',
+    'mongodb+srv://db-user:opaque-mongo-value@database.example/db',
+    'redis://:opaque-redis-value@cache.example/0',
+    'https://opaque-http-user@api.example/path',
+    'custom+scheme://opaque-custom-user@api.example/path',
+    'postgresql+psycopg://db-user:opaque%40encoded-value@database.example/db',
+  ];
+  for (const uri of uris) {
+    const sanitized = sanitizeMigrationValue('Use ' + uri);
+    assert.ok(sanitized.includes('[REDACTED_CREDENTIAL]@'));
+    assert.ok(!sanitized.includes('opaque'));
+  }
+  await put(join(f.sourceCodeRoot, '.claude.json'), { mcpServers: Object.fromEntries([
+    ...uris.map((uri, index) => ['dsn' + index, { command: 'node', args: ['server.mjs', '--dsn=' + uri] }]),
+    ['safe', { command: 'node', args: ['server.mjs', '--dsn', 'postgres://database.example/db'] }],
+  ]) });
+  await put(join(f.sourceCodeRoot, 'CLAUDE.md'), uris.join('\n'));
+  const result = await migrateProfile(f);
+  const config = JSON.parse(await readFile(join(f.targetCodeRoot, '.claude.json')));
+  assert.deepEqual(Object.keys(config.mcpServers), ['safe']);
+  assert.ok(!(await readFile(join(f.targetCodeRoot, 'CLAUDE.md'), 'utf8')).includes('opaque'));
+  assert.ok(result.warnings.includes('migration.mcp_definition_skipped'));
+});
+
+test('scripts altered by credential redaction or unsafe path rewriting are omitted without becoming executable', async t => {
+  const f = await fixture(t);
+  const scripts = join(f.sourceCodeRoot, 'skills', 'fixture', 'scripts');
+  await put(join(f.sourceCodeRoot, 'skills', 'fixture', 'SKILL.md'), 'Run scripts/environment.mjs, scripts/literal.py and scripts/safe.py.\n');
+  const inputs = {
+    'literal.py': 'api_key = "opaque-script-value"\nprint(api_key)\n',
+    'environment.mjs': 'const apiKey = process.env.MY_API_KEY;\nconsole.log(apiKey);\n',
+    'uri.sh': 'export DATABASE_URL="postgres://user:opaque-script-uri@host/database"\n',
+    'relocate.py': 'print("' + f.sourceCodeRoot + '/skills/fixture")\n',
+    'safe.py': 'print("safe fixture")\n',
+    'safe.sh': '#!/bin/sh\nprintf "safe fixture\\n"\n',
+  };
+  for (const [name, content] of Object.entries(inputs)) await put(join(scripts, name), content);
+  const good = join(f.sourceCodeRoot, 'skills', 'complete');
+  await put(join(good, 'SKILL.md'), 'Run scripts/safe.py or scripts/safe.sh.\n');
+  for (const name of ['safe.py', 'safe.sh']) await put(join(good, 'scripts', name), inputs[name]);
+  await chmod(join(good, 'scripts', 'safe.sh'), 0o700);
+  const before = await hashes(f.sourceCodeRoot);
+  const result = await migrateProfile(f);
+  await assert.rejects(lstat(join(f.targetCodeRoot, 'skills', 'fixture')), { code: 'ENOENT' });
+  const target = join(f.targetCodeRoot, 'skills', 'complete', 'scripts');
+  assert.equal(await readFile(join(target, 'safe.py'), 'utf8'), inputs['safe.py']);
+  assert.equal(await readFile(join(target, 'safe.sh'), 'utf8'), inputs['safe.sh']);
+  assert.equal((await lstat(join(target, 'safe.py'))).mode & 0o111, 0);
+  assert.equal((await lstat(join(target, 'safe.sh'))).mode & 0o777, 0o700);
+  assert.ok(result.warnings.includes('migration.script_redaction_omitted'));
+  assert.ok(result.warnings.includes('migration.script_path_rewrite_omitted'));
+  assert.ok(result.warnings.includes('migration.skill_incomplete'));
+  const report = JSON.parse(await readFile(result.report_path));
+  assert.equal(report.files.filter(file => file.reason === 'migration.script_redaction_omitted').length, 3);
+  assert.equal(report.files.filter(file => file.reason === 'migration.script_path_rewrite_omitted').length, 1);
+  assert.equal(report.files.filter(file => file.reason === 'migration.skill_incomplete').length, 3);
+  assert.equal(result.copied_files, 3);
+  assert.equal(result.skipped_files, 7);
+  assert.deepEqual(await hashes(f.sourceCodeRoot), before);
+});
+
+test('a skill referencing an omitted environment helper never becomes partially active', async t => {
+  const f = await fixture(t);
+  const skill = join(f.sourceCodeRoot, 'skills', 'example');
+  await put(join(skill, 'SKILL.md'), '---\nname: example\ndescription: Synthetic fixture.\n---\nRun scripts/helper.py.\n');
+  await put(join(skill, 'scripts', 'helper.py'), 'import os\napi_key = os.environ["MY_API_KEY"]\nprint(api_key)\n');
+  const before = await hashes(f.sourceCodeRoot);
+  const result = await migrateProfile(f);
+  await assert.rejects(lstat(join(f.targetCodeRoot, 'skills', 'example')), { code: 'ENOENT' });
+  assert.ok(!(await readdir(f.targetCodeRoot)).some(name => name.startsWith('.skill-import-')));
+  const report = JSON.parse(await readFile(result.report_path));
+  assert.equal(result.copied_files, 0);
+  assert.equal(result.skipped_files, 2);
+  assert.equal(report.files.length, 2);
+  assert.ok(report.files.every(file => file.status === 'skipped'));
+  assert.equal(report.files.filter(file => file.reason === 'migration.skill_incomplete').length, 1);
+  assert.equal(report.files.filter(file => file.reason === 'migration.script_redaction_omitted').length, 1);
+  assert.ok(result.warnings.includes('migration.skill_incomplete'));
+  assert.deepEqual(await hashes(f.sourceCodeRoot), before);
 });
 
 test('an official source without a Code directory still migrates available Desktop context',async t=>{

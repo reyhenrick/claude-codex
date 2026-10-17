@@ -419,9 +419,10 @@ export class PoolController {
       if (status.status === 'wait') return;
       const credentials = await this.credentials(true);
       const matches = credentials.filter(c => c.email?.toLowerCase() === pending.email);
-      const recovered = status.status === 'error' && matches.length === 1 && !pending.previous_names.includes(matches[0].name);
-      const fresh = matches.length === 1 && (!pending.previous_names.includes(matches[0].name) ||
-        (matches[0].updated_at && matches[0].updated_at !== pending.previous_versions?.[matches[0].name]));
+      const changed = credentials.filter(credential => !pending.previous_names.includes(credential.name) ||
+        (credential.updated_at && credential.updated_at !== pending.previous_versions?.[credential.name]));
+      const fresh = matches.length === 1 && changed.length === 1 && changed[0].name === matches[0].name;
+      const recovered = status.status === 'error' && fresh && !pending.previous_names.includes(matches[0].name);
       if ((status.status !== 'ok' && !recovered) || !fresh) {
         const error = status.status === 'ok' ? `A autorização não corresponde a ${pending.email}. Conecte novamente escolhendo esse e-mail.` : 'A autorização expirou ou falhou. Inicie uma nova conexão.';
         await this.saveState({ ...state, pending_oauth: { ...pending, error }, revision: state.revision + 1 }); return;

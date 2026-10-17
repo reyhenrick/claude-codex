@@ -3,6 +3,7 @@ import { pipeline } from 'node:stream';
 import { resolveModel } from './model-catalog.mjs';
 import { adaptMessage } from './model-adapter.mjs';
 import { BridgeError } from './pool-controller.mjs';
+import { authorizeClient } from './client-auth.mjs';
 
 const forwardedHeaders = new Set(['anthropic-version', 'anthropic-beta', 'user-agent', 'accept',
   'x-client-request-id', 'x-session-id', 'x-claude-code-session-id', 'x-claude-code-parent-session-id',
@@ -27,7 +28,8 @@ async function readBody(request, maximum) {
   return value;
 }
 
-export function createPoolRouter({ controller, getClientKey, backendPort = 18768, maxBodyBytes = 64 * 1024 * 1024 }) {
+export function createPoolRouter({ controller, getClientKey, getIngressKey, backendPort = 18768, maxBodyBytes = 64 * 1024 * 1024 }) {
+  if (typeof getIngressKey !== 'function') throw new Error('A autenticação local do aplicativo é obrigatória.');
   let activeRequests = 0;
   let draining = controller.pausedForUpdate === true;
   let activeActions = 0;
@@ -42,10 +44,14 @@ export function createPoolRouter({ controller, getClientKey, backendPort = 18768
       const origin = request.headers.origin;
       if (origin && origin !== `http://${host}`) throw new BridgeError(403, 'Origem local obrigatória.');
       const path = new URL(request.url, 'http://localhost').pathname;
+      const supplied = request.headers.authorization !== undefined || request.headers['x-api-key'] !== undefined;
+      const authenticated = supplied && authorizeClient(request.headers, await getIngressKey());
       if (request.method === 'GET' && path === '/healthz') {
+        if (!authenticated) { json(response, 200, { status: 'ok', backend: 'codex-pool' }); return; }
         const state = await controller.readState();
         json(response, 200, { status: 'ok', backend: 'codex-pool', active_requests: activeRequests, reset_requests: controller.resetInFlight.size, pending_oauth: state.pending_oauth ? 1 : 0, pending_actions: activeActions, draining }); return;
       }
+      if (!authenticated) throw new BridgeError(401, 'Autenticação local obrigatória.');
       if (request.method === 'GET' && path === '/v1/models') {
         const data = (await controller.availableModels()).map(m => ({ type: 'model', id: m.id, display_name: m.label,
           ...(m.family ? { anthropic_family_tier: m.family, is_family_default: true } : {}) }));
@@ -126,8 +132,8 @@ export function createPoolRouter({ controller, getClientKey, backendPort = 18768
       if (response.destroyed) return;
       if (response.headersSent) { response.destroy(); return; }
       const status = error instanceof BridgeError ? error.status : 502;
-      json(response, status, { type: 'error', error: { type: status === 429 ? 'rate_limit_error' : status < 500 ? 'invalid_request_error' : 'api_error',
-        code: status === 409 ? 'bridge.conflict' : status === 403 ? 'bridge.local_only' : status === 429 ? 'bridge.no_capacity' : status >= 500 ? 'bridge.unavailable' : 'bridge.invalid_request',
+      json(response, status, { type: 'error', error: { type: status === 401 ? 'authentication_error' : status === 429 ? 'rate_limit_error' : status < 500 ? 'invalid_request_error' : 'api_error',
+        code: status === 401 ? 'bridge.unauthorized' : status === 409 ? 'bridge.conflict' : status === 403 ? 'bridge.local_only' : status === 429 ? 'bridge.no_capacity' : status >= 500 ? 'bridge.unavailable' : 'bridge.invalid_request',
         message: error instanceof BridgeError ? error.message : 'O serviço local do Codex não está disponível. Tente novamente.' } });
     }
   });

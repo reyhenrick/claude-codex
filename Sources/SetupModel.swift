@@ -49,7 +49,8 @@ func runSetup(_ options: [String: Any]) async throws -> SetupResult {
     @Published var result: SetupResult?
     @Published var error: String?
     var resultMessage: String? {
-        result?.localizedMessage(fallback: "setup.isolatedCreated")
+        guard let result, result.ok else { return nil }
+        return result.localizedMessage(fallback: "setup.isolatedCreated")
     }
     func chooseSource() {
         let panel = NSOpenPanel(); panel.title = L10n.text("setup.chooseClaude")
@@ -75,9 +76,13 @@ func runSetup(_ options: [String: Any]) async throws -> SetupResult {
         if !sourceCodeRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { options["source_code_root"] = sourceCodeRoot }
         Task {
             defer { busy = false }
-            do { let answer = try await runSetup(options); if answer.ok { result = answer } else { error = answer.localizedMessage(fallback: "error.setup") } }
+            do { accept(try await runSetup(options)) }
             catch { self.error = error.localizedDescription }
         }
+    }
+    func accept(_ answer: SetupResult) {
+        result = answer
+        error = answer.ok ? nil : answer.localizedMessage(fallback: "error.setup")
     }
     func revealMigrationReport() {
         if let path = result?.migration?.reportPath { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }

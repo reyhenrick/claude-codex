@@ -175,7 +175,7 @@ def verify_app(app):
     command(["plutil", "-lint", str(contents / "Info.plist")])
     updater = updater_configuration(contents, info)
     signatures = []
-    executables = {"MacOS/ClaudeCodex": "26.0", "Resources/bin/ClaudeLauncher": "26.0", "Resources/bin/BridgeService": "26.0", "Resources/bin/node": None, "Resources/bin/cli-proxy-api": None}
+    executables = {"MacOS/ClaudeCodex": "26.0", "Resources/bin/ClaudeLauncher": "26.0", "Resources/bin/BridgeService": "26.0", "Resources/bin/UpdateRecovery": "26.0", "Resources/bin/node": None, "Resources/bin/cli-proxy-api": None}
     executables.update({f"Frameworks/Sparkle.framework/Versions/B/{relative}": "12.0" for relative in (
         "Sparkle", "Autoupdate", "Updater.app/Contents/MacOS/Updater",
         "XPCServices/Installer.xpc/Contents/MacOS/Installer", "XPCServices/Downloader.xpc/Contents/MacOS/Downloader",
