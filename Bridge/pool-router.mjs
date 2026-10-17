@@ -1,7 +1,6 @@
 import http from 'node:http';
 import { pipeline } from 'node:stream';
-import { readFile } from 'node:fs/promises';
-import { models, resolveModel } from './model-catalog.mjs';
+import { resolveModel } from './model-catalog.mjs';
 import { adaptMessage } from './model-adapter.mjs';
 import { BridgeError } from './pool-controller.mjs';
 
@@ -28,8 +27,10 @@ async function readBody(request, maximum) {
   return value;
 }
 
-export function createPoolRouter({ controller, getClientKey, backendPort = 18768, maxBodyBytes = 64 * 1024 * 1024, pagePath = new URL('./accounts.html', import.meta.url) }) {
+export function createPoolRouter({ controller, getClientKey, backendPort = 18768, maxBodyBytes = 64 * 1024 * 1024 }) {
   let activeRequests = 0;
+  let draining = controller.pausedForUpdate === true;
+  let activeActions = 0;
   const server = http.createServer(async (request, response) => {
     const abort = new AbortController();
     response.on('close', () => { if (!response.writableFinished) abort.abort(); });
@@ -42,33 +43,48 @@ export function createPoolRouter({ controller, getClientKey, backendPort = 18768
       if (origin && origin !== `http://${host}`) throw new BridgeError(403, 'Origem local obrigatória.');
       const path = new URL(request.url, 'http://localhost').pathname;
       if (request.method === 'GET' && path === '/healthz') {
-        json(response, 200, { status: 'ok', backend: 'codex-pool', active_requests: activeRequests }); return;
+        const state = await controller.readState();
+        json(response, 200, { status: 'ok', backend: 'codex-pool', active_requests: activeRequests, reset_requests: controller.resetInFlight.size, pending_oauth: state.pending_oauth ? 1 : 0, pending_actions: activeActions, draining }); return;
       }
       if (request.method === 'GET' && path === '/v1/models') {
-        const data = models.map(m => ({ type: 'model', id: m.id, display_name: m.label }));
-        json(response, 200, { data, has_more: false, first_id: data[0].id, last_id: data.at(-1).id }); return;
-      }
-      if (request.method === 'GET' && ['/', '/accounts', '/monitor'].includes(path)) {
-        const page = await readFile(pagePath);
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
-          'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'" });
-        response.end(page); return;
+        const data = (await controller.availableModels()).map(m => ({ type: 'model', id: m.id, display_name: m.label,
+          ...(m.family ? { anthropic_family_tier: m.family, is_family_default: true } : {}) }));
+        json(response, 200, { data, has_more: false, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null }); return;
       }
       if (request.method === 'GET' && path === '/_bridge/accounts') {
         json(response, 200, { ...(await controller.status()), active_requests: activeRequests }); return;
       }
-      if (request.method === 'POST' && ['/_bridge/settings', '/_bridge/refresh', '/_bridge/connect', '/_bridge/connect/cancel', '/_bridge/disconnect'].includes(path)) {
+      if (request.method === 'POST' && ['/_bridge/settings', '/_bridge/refresh', '/_bridge/connect', '/_bridge/connect/cancel', '/_bridge/disconnect', '/_bridge/reset', '/_bridge/update/drain', '/_bridge/update/resume'].includes(path)) {
         if (origin !== `http://${host}` || request.headers['x-bridge-action'] !== 'accounts') throw new BridgeError(403, 'Abra o painel local para mudar as contas.');
         const body = await readBody(request, 8192);
+        if (path === '/_bridge/update/drain' || path === '/_bridge/update/resume') {
+          if (Object.keys(body).length) throw new BridgeError(400, 'A configuração da atualização é inválida.');
+          const requestedDrain = path.endsWith('/drain');
+          if (requestedDrain) draining = true;
+          await controller.setUpdateDrain(requestedDrain); draining = requestedDrain;
+          const state = await controller.readState(), resetRequests = controller.resetInFlight.size, oauth = state.pending_oauth ? 1 : 0;
+          json(response, 200, { ready: draining && activeRequests === 0 && activeActions === 0 && resetRequests === 0 && oauth === 0, draining, active_requests: activeRequests, reset_requests: resetRequests, pending_oauth: oauth, pending_actions: activeActions }); return;
+        }
+        if (draining && path !== '/_bridge/connect/cancel' && path !== '/_bridge/refresh') throw new BridgeError(503, 'Aguarde a atualização do aplicativo.');
+        const trackedAction = path !== '/_bridge/refresh';
+        if (trackedAction) activeActions++;
+        try {
+        if (path === '/_bridge/reset') {
+          if (Object.keys(body).some(k => !['email', 'revision'].includes(k)) || typeof body.email !== 'string' || !Number.isInteger(body.revision)) throw new BridgeError(400, 'Selecione a conta e uma configuração atual para aplicar o reset.');
+          await controller.resetAccount(body.email, { revision: body.revision });
+        }
         if (path.endsWith('/settings')) await controller.update(body);
         if (path === '/_bridge/connect') { json(response, 200, await controller.connect(body.email)); return; }
         if (path === '/_bridge/connect/cancel') await controller.cancelConnection();
         if (path === '/_bridge/disconnect') await controller.disconnect(body.email);
         json(response, 200, { ...(await controller.status(path.endsWith('/refresh'))), active_requests: activeRequests }); return;
+        } finally { if (trackedAction) activeActions--; }
       }
       if (request.method !== 'POST' || !['/v1/messages', '/v1/messages/count_tokens'].includes(path)) throw new BridgeError(404, 'Endpoint não disponível.');
+      if (draining) throw new BridgeError(503, 'Aguarde a atualização do aplicativo.');
       const value = await readBody(request, maxBodyBytes);
-      if (!resolveModel(value.model)) throw new BridgeError(400, 'Este perfil aceita somente GPT-6.1 Sol e GPT-6 Astra, normal ou Fast.');
+      if (draining) throw new BridgeError(503, 'Aguarde a atualização do aplicativo.');
+      if (!resolveModel(value.model)) throw new BridgeError(400, 'Selecione GPT-6.1 Sol, GPT-6 Luna ou GPT-6 Astra em uma modalidade disponível neste perfil.');
       activeRequests++;
       let settled = false;
       let activeRelease = null;
@@ -76,7 +92,8 @@ export function createPoolRouter({ controller, getClientKey, backendPort = 18768
       response.once('close', settle); response.once('finish', settle);
       const countOnly = path.endsWith('/count_tokens');
       const key = await getClientKey();
-      for await (const account of controller.candidates({ countOnly, signal: abort.signal })) {
+      for await (const account of controller.candidates({ model: value.model, countOnly, signal: abort.signal })) {
+        if (!await controller.validateCandidate(account)) continue;
         const releaseAccount = controller.acquire(account);
         if (!releaseAccount) continue;
         activeRelease = releaseAccount;
@@ -87,6 +104,7 @@ export function createPoolRouter({ controller, getClientKey, backendPort = 18768
         catch (error) { throw new BridgeError(400, error.message); }
         const headers = Object.fromEntries(Object.entries(request.headers).filter(([key]) => forwardedHeaders.has(key)));
         Object.assign(headers, { authorization: `Bearer ${key}`, 'content-type': 'application/json', 'content-length': body.length });
+        if (!controller.validateCandidateNow(account)) { releaseAccount(); activeRelease = null; continue; }
         incoming = await new Promise((resolve, reject) => {
           const upstream = http.request({ hostname: '127.0.0.1', port: backendPort, path, method: 'POST', headers, signal: abort.signal }, resolve);
           upstream.on('error', reject); upstream.end(body);
@@ -103,12 +121,13 @@ export function createPoolRouter({ controller, getClientKey, backendPort = 18768
         // From this point onward, never replay the request or any partial tool output on another account.
         pipeline(incoming, response, () => {}); return;
       }
-      throw new BridgeError(429, 'Nenhuma conta selecionada tem limite disponível e confirmado. Consulte o painel de contas; novas solicitações serão liberadas quando a cota voltar.');
+      throw new BridgeError(429, 'Nenhuma conta selecionada confirmou suporte a este modelo e modalidade com limite disponível. Consulte o painel de contas.');
     } catch (error) {
       if (response.destroyed) return;
       if (response.headersSent) { response.destroy(); return; }
       const status = error instanceof BridgeError ? error.status : 502;
       json(response, status, { type: 'error', error: { type: status === 429 ? 'rate_limit_error' : status < 500 ? 'invalid_request_error' : 'api_error',
+        code: status === 409 ? 'bridge.conflict' : status === 403 ? 'bridge.local_only' : status === 429 ? 'bridge.no_capacity' : status >= 500 ? 'bridge.unavailable' : 'bridge.invalid_request',
         message: error instanceof BridgeError ? error.message : 'O serviço local do Codex não está disponível. Tente novamente.' } });
     }
   });

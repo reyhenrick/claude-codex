@@ -2,7 +2,7 @@ import { resolveModel } from './model-catalog.mjs';
 
 export function adaptMessage(value, prefix) {
   const target = resolveModel(value?.model);
-  if (!target) throw new Error('Este perfil aceita somente GPT-6.1 Sol e GPT-6 Astra, normal ou Fast.');
+  if (!target) throw new Error('Este modelo não faz parte do catálogo do Claude Codex.');
   const result = { ...value, model: `${prefix}/${target}` };
   const effort = value.output_config?.effort;
   if (effort !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) {

@@ -3,23 +3,62 @@ import Combine
 import Foundation
 import ServiceManagement
 
+enum AccountConfirmation {
+    case disconnect(Account)
+    case extraCredits
+    case autoReset(Account)
+    case reset(Account)
+
+    var title: String {
+        switch self {
+        case .disconnect: return L10n.text("confirm.disconnectTitle")
+        case .extraCredits: return L10n.text("confirm.creditsTitle")
+        case .autoReset: return L10n.text("confirm.autoResetTitle")
+        case .reset(let account): return L10n.text(account.resets.reason == "retry" ? "confirm.retryTitle" : "confirm.resetTitle")
+        }
+    }
+    var message: String {
+        switch self {
+        case .disconnect(let account): return L10n.text("confirm.disconnectMessage", account.email)
+        case .extraCredits: return L10n.text("confirm.creditsMessage")
+        case .autoReset(let account): return L10n.text("confirm.autoResetMessage", account.email, String(account.resets.thresholdPercent))
+        case .reset(let account): return L10n.text(account.resets.reason == "retry" ? "confirm.retryMessage" : "confirm.resetMessage", account.email)
+        }
+    }
+    var actionTitle: String {
+        switch self {
+        case .disconnect: return L10n.text("action.disconnect")
+        case .extraCredits: return L10n.text("action.allowCredits")
+        case .autoReset: return L10n.text("action.enableAutoReset")
+        case .reset(let account): return L10n.text(account.resets.reason == "retry" ? "action.checkAttempt" : "action.applyReset")
+        }
+    }
+    var isDestructive: Bool {
+        if case .disconnect = self { return true }
+        return false
+    }
+}
+
 @MainActor
 final class AccountsModel: ObservableObject {
     @Published var snapshot: PoolSnapshot?
-    @Published var error: String?
+    @Published var queryError: String?
+    @Published var actionError: String?
     @Published var refreshing = false
     @Published var applying = false
     @Published var showingConnectionForm = false
     @Published var connectionEmail = ""
-    @Published var disconnectCandidate: Account?
+    @Published var confirmation: AccountConfirmation?
     @Published var openAtLogin = SMAppService.mainApp.status == .enabled
     @Published var lastRefresh: Date?
     private var loginURL: URL?
     private var polling: Task<Void, Never>?
+    private let isStaging: Bool
     private let session: URLSession
     let baseURL: URL
 
     init(staging: Bool = false) {
+        isStaging = staging
         baseURL = URL(string: staging ? "http://127.0.0.1:18769" : "http://127.0.0.1:18765")!
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 45
@@ -28,6 +67,7 @@ final class AccountsModel: ObservableObject {
     }
     func start() {
         polling = Task { [weak self] in
+            if let self, !self.isStaging { await self.prepareConnectionIfNeeded() }
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.load(refresh: self.snapshot == nil)
@@ -50,9 +90,18 @@ final class AccountsModel: ObservableObject {
         }
         let (data, response) = try await session.data(for: request)
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
-        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+        guard let response = response as? HTTPURLResponse else { throw BridgeFailure(message: L10n.text("error.serviceAction")) }
+        guard (200..<300).contains(response.statusCode) else {
             let detail = try? decoder.decode(ErrorResponse.self, from: data)
-            throw BridgeFailure(message: detail?.error.message ?? "O serviço de contas não respondeu. Tente novamente.")
+            let fallback: String
+            switch response.statusCode {
+            case 400, 422: fallback = "error.invalidRequest"
+            case 401, 403: fallback = "error.authorization"
+            case 404: fallback = "error.unavailableAction"
+            case 409: fallback = "error.conflict"
+            default: fallback = "error.serviceAction"
+            }
+            throw BridgeFailure(message: L10n.serviceMessage(code: detail?.error.code, fallback: fallback))
         }
         return try decoder.decode(T.self, from: data)
     }
@@ -65,23 +114,29 @@ final class AccountsModel: ObservableObject {
             snapshot = result
             if refresh { lastRefresh = Date() }
             if result.connection == nil { loginURL = nil }
-            error = nil
+            queryError = nil
         } catch is CancellationError {} catch {
-            self.error = userMessage(error)
+            queryError = userMessage(error)
         }
     }
     private func userMessage(_ error: Error) -> String {
         if let failure = error as? BridgeFailure { return failure.message }
-        if error is DecodingError { return "O serviço retornou dados inesperados. Atualize o app e tente novamente." }
-        return "Não foi possível acessar o serviço local. Use “Preparar serviço” e tente novamente."
+        if error is DecodingError { return L10n.text("error.unexpectedData") }
+        return L10n.text("error.localService")
     }
     private func mutate(_ path: String, body: [String: Any]) {
         guard !applying, !refreshing else { return }
-        applying = true; error = nil
+        applying = true; actionError = nil
         Task {
             defer { applying = false }
-            do { let result: PoolSnapshot = try await call(path, body: body); snapshot = result }
-            catch { self.error = userMessage(error) }
+            do {
+                let result: PoolSnapshot = try await call(path, body: body)
+                snapshot = result; queryError = nil
+            } catch {
+                if path == "_bridge/reset", !(error is BridgeFailure) {
+                    actionError = L10n.text("error.resetUncertain")
+                } else { actionError = userMessage(error) }
+            }
         }
     }
     func setAutomatic() {
@@ -104,46 +159,99 @@ final class AccountsModel: ObservableObject {
         let order = [account.email] + snapshot.priorityOrder.filter { $0 != account.email }
         mutate("_bridge/settings", body: ["revision": snapshot.revision, "mode": "automatic", "priority_order": order])
     }
+    func setExtraCredits(_ enabled: Bool) {
+        guard let snapshot, !applying, !refreshing, enabled != snapshot.allowExtraCredits else { return }
+        if enabled { confirmation = .extraCredits }
+        else { mutate("_bridge/settings", body: ["revision": snapshot.revision, "allow_extra_credits": false]) }
+    }
+    func setAutoReset(_ account: Account, enabled: Bool) {
+        guard let snapshot, !applying, !refreshing,
+            let current = snapshot.accounts.first(where: { $0.email == account.email }), enabled != current.resets.autoEnabled else { return }
+        if enabled { confirmation = .autoReset(current) }
+        else { updateAutoReset(email: account.email, enabled: false) }
+    }
+    private func updateAutoReset(email: String, enabled: Bool) {
+        guard let snapshot, snapshot.accounts.contains(where: { $0.email == email }) else { return }
+        var emails = snapshot.autoResetEmails.filter { $0 != email }
+        if enabled { emails.append(email) }
+        mutate("_bridge/settings", body: ["revision": snapshot.revision, "auto_reset_emails": emails])
+    }
+    func applyReset(_ account: Account) {
+        guard let current = snapshot?.accounts.first(where: { $0.email == account.email }),
+            !applying, !refreshing, current.resets.canApply else { return }
+        confirmation = .reset(current)
+    }
+    func confirmAction(_ confirmation: AccountConfirmation) {
+        guard !applying, !refreshing else { return }
+        self.confirmation = nil
+        switch confirmation {
+        case .disconnect(let account): disconnect(account)
+        case .extraCredits:
+            guard let snapshot else { return }
+            mutate("_bridge/settings", body: ["revision": snapshot.revision, "allow_extra_credits": true])
+        case .autoReset(let account): updateAutoReset(email: account.email, enabled: true)
+        case .reset(let account):
+            guard let snapshot, let current = snapshot.accounts.first(where: { $0.email == account.email }), current.resets.canApply else {
+                actionError = L10n.text("error.resetChanged")
+                return
+            }
+            mutate("_bridge/reset", body: ["revision": snapshot.revision, "email": account.email])
+        }
+    }
     func connect() {
         guard !applying, !refreshing else { return }
         let email = connectionEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !email.isEmpty else { error = "Informe o e-mail da conta."; return }
-        applying = true; error = nil
+        guard !email.isEmpty else { actionError = L10n.text("error.emailRequired"); return }
+        applying = true; actionError = nil
         Task {
             do {
                 let result: LoginResponse = try await call("_bridge/connect", body: ["email": email])
                 guard let url = URL(string: result.authUrl), url.scheme == "https", url.host == "auth.openai.com", url.path == "/oauth/authorize" else {
-                    throw BridgeFailure(message: "O endereço de autorização não é válido.")
+                    throw BridgeFailure(message: L10n.text("error.authorizationURL"))
                 }
                 loginURL = url; showingConnectionForm = false; connectionEmail = ""
-                if !NSWorkspace.shared.open(url) { error = "Não foi possível abrir o navegador. Use “Continuar login”." }
+                if !NSWorkspace.shared.open(url) { actionError = L10n.text("error.openBrowser") }
                 applying = false; await load()
-            } catch { applying = false; self.error = userMessage(error) }
+            } catch { applying = false; actionError = userMessage(error) }
         }
     }
     func continueLogin() { if let loginURL { NSWorkspace.shared.open(loginURL) } }
     var canContinueLogin: Bool { loginURL != nil }
     func cancelConnection() { loginURL = nil; mutate("_bridge/connect/cancel", body: [:]) }
-    func disconnect(_ account: Account) { mutate("_bridge/disconnect", body: ["email": account.email]) }
+    private func disconnect(_ account: Account) { mutate("_bridge/disconnect", body: ["email": account.email]) }
     func setOpenAtLogin(_ enabled: Bool) {
         do {
             if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             openAtLogin = SMAppService.mainApp.status == .enabled
             if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
-        } catch { self.error = "Não foi possível alterar o início de sessão: \(error.localizedDescription)" }
+        } catch { actionError = L10n.text("error.loginItem", error.localizedDescription) }
     }
-    func startService() {
+    private func prepareConnectionIfNeeded() async {
+        struct Health: Decodable { let backend: String }
+        do { let health: Health = try await call("healthz"); if health.backend == "codex-pool" { return } } catch {}
+        applying = true
+        defer { applying = false }
+        do {
+            let result = try await runSetup(["action": "service"])
+            if !result.ok { throw BridgeFailure(message: result.localizedMessage(fallback: "error.setup")) }
+            for _ in 0..<40 {
+                if let health: Health = try? await call("healthz"), health.backend == "codex-pool" { return }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            queryError = L10n.text("error.localService")
+        } catch { queryError = userMessage(error) }
+    }
+    func restoreConnection() {
         guard !applying, !refreshing else { return }
-        applying = true; error = nil
+        applying = true; actionError = nil
         Task {
             do {
                 let result = try await runSetup(["action": "service"])
-                if !result.ok { throw BridgeFailure(message: result.message) }
+                if !result.ok { throw BridgeFailure(message: result.localizedMessage(fallback: "error.setup")) }
                 try? await Task.sleep(for: .seconds(2))
                 applying = false; await load(refresh: true)
-            } catch { applying = false; self.error = error.localizedDescription }
+            } catch { applying = false; actionError = error.localizedDescription }
         }
     }
     func openSetup() { NotificationCenter.default.post(name: Notification.Name("ShowClaudeSetup"), object: nil) }
-    func openBrowserPanel() { NSWorkspace.shared.open(baseURL.appendingPathComponent("accounts")) }
 }

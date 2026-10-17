@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "sparkle": {
+    "version": "2.10.0",
+    "archiveURL": "https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz",
+    "sha256": "c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c"
+  },
+  "runtime": {
+    "node": {
+      "version": "22.23.3",
+      "archives": {
+        "arm64": {
+          "archiveURL": "https://nodejs.org/dist/v22.23.3/node-v22.23.3-darwin-arm64.tar.xz",
+          "sha256": "72d5d8832b41c9d9646197af614ffd751406ea4d215060eb91b98864e1919a3e"
+        },
+        "x86_64": {
+          "archiveURL": "https://nodejs.org/dist/v22.23.3/node-v22.23.3-darwin-x64.tar.xz",
+          "sha256": "ac41874c3352937119cfec39e1a98c578fe58ce8a86d7e785b89a4706015f305"
+        }
+      }
+    },
+    "proxy": {
+      "version": "8.0.32",
+      "archives": {
+        "arm64": {
+          "archiveURL": "https://github.com/router-for-me/CLIProxyAPI/releases/download/v8.0.32/CLIProxyAPI_8.0.32_darwin_aarch64.tar.gz",
+          "sha256": "48fe6a391a01e730ee6ebe3f1609ff92578a97a7a9a44579013ca8f3a6d58d51"
+        },
+        "x86_64": {
+          "archiveURL": "https://github.com/router-for-me/CLIProxyAPI/releases/download/v8.0.32/CLIProxyAPI_8.0.32_darwin_amd64.tar.gz",
+          "sha256": "c327f421d995692f6590a752abd449db5e71df61803b7041e4d3bd59cd1e1bd8"
+        }
+      }
+    }
+  }
+}

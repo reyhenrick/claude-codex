@@ -10,3 +10,6 @@ auth/
 accounts-state.json
 config.yaml
 .env*
+dist/
+__pycache__/
+*.pyc

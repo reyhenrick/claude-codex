@@ -18,6 +18,7 @@ async function fixture(t) {
   await writeFile(runtimeDir + '/accounts-state.json', JSON.stringify({ accounts, priority_order: emails, mode: 'automatic', revision: 0 }));
   const calls = []; const quotas = new Map(emails.map(e => [e, available()]));
   const management = {
+    models: async () => ({ models: ['gpt-6.1-sol', 'gpt-6-luna', 'gpt-6-astra'].map(slug => ({ slug, visibility: 'list', service_tiers: [{ id: 'priority', name: 'Fast' }] })) }),
     credentials: async () => accounts.map((a, i) => ({ ...a, provider: 'codex', auth_index: String(i), id_token: { chatgpt_account_id: `account-${i}`, plan_type: 'pro' } })),
     quota: async c => { calls.push(c.email); const result = quotas.get(c.email); if (result instanceof Error) throw result; return result; },
     resetCooldown: async () => {},
@@ -47,10 +48,10 @@ test('quota gate blocks exhausted paid-credit accounts, malformed results, and e
 
 test('automatic routing skips exhausted and unknown accounts; fixed mode stops instead of falling through', async t => {
   const f = await fixture(t); f.quotas.set(emails[0], available(100)); f.quotas.set(emails[1], new Error('offline'));
-  const selected = []; for await (const a of f.controller.candidates()) selected.push(a.email);
+  const selected = []; for await (const a of f.controller.candidates({ model: 'claude-sonnet-5-5' })) selected.push(a.email);
   assert.deepEqual(selected, [emails[2]]); assert.deepEqual(f.calls, emails);
   await f.controller.update({ revision: 0, mode: 'fixed', fixed_email: emails[0] }); f.calls.length = 0;
-  const fixed = []; for await (const a of f.controller.candidates()) fixed.push(a.email);
+  const fixed = []; for await (const a of f.controller.candidates({ model: 'claude-sonnet-5-5' })) fixed.push(a.email);
   assert.deepEqual(fixed, []); assert.deepEqual(f.calls, [emails[0]]);
 });
 
@@ -61,7 +62,7 @@ test('manual order persists immediately, stale concurrent edits fail, state cont
   ]);
   assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
   assert.equal(results.find(r => r.status === 'rejected').reason.status, 409);
-  for await (const account of f.controller.candidates()) { assert.equal(account.email, emails[2]); break; }
+  for await (const account of f.controller.candidates({ model: 'claude-sonnet-5-5' })) { assert.equal(account.email, emails[2]); break; }
   const reloaded = new PoolController({ runtimeDir: f.runtimeDir, management: f.management });
   assert.deepEqual((await reloaded.readState()).priority_order, order);
   assert.equal((await stat(f.runtimeDir + '/accounts-state.json')).mode & 0o777, 0o600);

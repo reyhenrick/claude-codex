@@ -2,10 +2,24 @@ import AppKit
 import Combine
 import Foundation
 
-struct SetupResult: Decodable { let ok: Bool; let message: String; let path: String? }
+struct MigrationSummary: Decodable {
+    let copiedFiles: Int
+    let skippedFiles: Int
+    let warnings: [String]
+    let reportPath: String?
+}
+
+struct SetupResult: Decodable {
+    let ok: Bool
+    let code: String?
+    let message: String
+    let path: String?
+    let migration: MigrationSummary?
+    func localizedMessage(fallback: String) -> String { L10n.serviceMessage(code: code, fallback: fallback) }
+}
 
 func runSetup(_ options: [String: Any]) async throws -> SetupResult {
-    guard let resources = Bundle.main.resourceURL else { throw BridgeFailure(message: "Os arquivos do aplicativo não foram encontrados.") }
+    guard let resources = Bundle.main.resourceURL else { throw BridgeFailure(message: L10n.text("error.appFiles")) }
     let data = try JSONSerialization.data(withJSONObject: options)
     return try await withCheckedThrowingContinuation { continuation in
         let process = Process(), input = Pipe(), output = Pipe()
@@ -14,8 +28,11 @@ func runSetup(_ options: [String: Any]) async throws -> SetupResult {
         process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
         process.terminationHandler = { _ in
             let result = output.fileHandleForReading.readDataToEndOfFile()
-            do { continuation.resume(returning: try JSONDecoder().decode(SetupResult.self, from: result)) }
-            catch { continuation.resume(throwing: BridgeFailure(message: "A preparação não foi concluída. Confira se o app está instalado corretamente.")) }
+            do {
+                let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+                continuation.resume(returning: try decoder.decode(SetupResult.self, from: result))
+            }
+            catch { continuation.resume(throwing: BridgeFailure(message: L10n.text("error.setupInstallation"))) }
         }
         do { try process.run(); input.fileHandleForWriting.write(data); try? input.fileHandleForWriting.close() }
         catch { process.terminationHandler = nil; continuation.resume(throwing: error) }
@@ -23,34 +40,47 @@ func runSetup(_ options: [String: Any]) async throws -> SetupResult {
 }
 
 @MainActor final class SetupModel: ObservableObject {
-    @Published var kind = "profile"
-    @Published var name = "Codex"
+    @Published var name = "Claude Codex Workspace"
     @Published var source = "/Applications/Claude.app"
-    @Published var root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude-3p").path
-    @Published var activate = true
+    @Published var migrateData = true
+    @Published var sourceDataRoot = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Claude").path
+    @Published var sourceCodeRoot = ""
     @Published var busy = false
     @Published var result: SetupResult?
     @Published var error: String?
+    var resultMessage: String? {
+        result?.localizedMessage(fallback: "setup.isolatedCreated")
+    }
     func chooseSource() {
-        let panel = NSOpenPanel(); panel.title = "Selecione o aplicativo oficial Claude.app"
+        let panel = NSOpenPanel(); panel.title = L10n.text("setup.chooseClaude")
         panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.treatsFilePackagesAsDirectories = false; panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         if panel.runModal() == .OK, let url = panel.url { source = url.path }
     }
-    func chooseRoot() {
-        let panel = NSOpenPanel(); panel.title = "Selecione a pasta de dados do Claude em modo 3P"
-        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true; panel.allowsMultipleSelection = false
+    func chooseSourceDataRoot() {
+        let panel = NSOpenPanel(); panel.title = L10n.text("setup.chooseSourceData")
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = false; panel.allowsMultipleSelection = false
         panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        if panel.runModal() == .OK, let url = panel.url { root = url.path }
+        if panel.runModal() == .OK, let url = panel.url { sourceDataRoot = url.path }
+    }
+    func chooseSourceCodeRoot() {
+        let panel = NSOpenPanel(); panel.title = L10n.text("setup.chooseCodeData")
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = false; panel.allowsMultipleSelection = false
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
+        if panel.runModal() == .OK, let url = panel.url { sourceCodeRoot = url.path }
     }
     func create() {
         guard !busy else { return }; busy = true; error = nil; result = nil
-        let options: [String: Any] = kind == "profile" ? ["action": "profile", "root": root, "name": name, "activate": activate] : ["action": "isolated", "source": source, "name": name]
+        var options: [String: Any] = ["action": "isolated", "source": source, "name": name, "migrate_data": migrateData, "source_data_root": sourceDataRoot]
+        if !sourceCodeRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { options["source_code_root"] = sourceCodeRoot }
         Task {
             defer { busy = false }
-            do { let answer = try await runSetup(options); if answer.ok { result = answer } else { error = answer.message } }
+            do { let answer = try await runSetup(options); if answer.ok { result = answer } else { error = answer.localizedMessage(fallback: "error.setup") } }
             catch { self.error = error.localizedDescription }
         }
+    }
+    func revealMigrationReport() {
+        if let path = result?.migration?.reportPath { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
     }
     func reveal() { if let path = result?.path { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) } }
 }

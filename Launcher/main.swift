@@ -1,8 +1,11 @@
 import AppKit
 import Foundation
-struct Profile: Decodable { let applicationPath: String; let userDataDirectory: String }
+struct Profile: Decodable { let applicationPath: String; let userDataDirectory: String; let profileId: String? }
 @MainActor final class Launcher: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { await launch() }
+    }
+    private func launch() async {
         do {
             guard let file = Bundle.main.url(forResource: "Profile", withExtension: "json") else { throw CocoaError(.fileNoSuchFile) }
             let profile = try JSONDecoder().decode(Profile.self, from: Data(contentsOf: file))
@@ -10,6 +13,10 @@ struct Profile: Decodable { let applicationPath: String; let userDataDirectory: 
             guard FileManager.default.fileExists(atPath: app.path) else { throw CocoaError(.fileNoSuchFile) }
             if let existing = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL?.standardizedFileURL == app.standardizedFileURL }) {
                 existing.activate(); NSApp.terminate(nil); return
+            }
+            if let profileId = profile.profileId {
+                do { try await refreshProfileCatalog(dataDirectory: profile.userDataDirectory, profileId: profileId) }
+                catch { connectionFailure(); NSApp.terminate(nil); return }
             }
             let config = NSWorkspace.OpenConfiguration()
             config.createsNewApplicationInstance = true
@@ -23,9 +30,14 @@ struct Profile: Decodable { let applicationPath: String; let userDataDirectory: 
             }
         } catch { failure(); NSApp.terminate(nil) }
     }
+    private func connectionFailure() {
+        let alert = NSAlert(); alert.messageText = L10n.text("launcher.connectionRequired")
+        alert.informativeText = L10n.text("launcher.connectAccounts")
+        alert.runModal()
+    }
     private func failure() {
-        let alert = NSAlert(); alert.messageText = "Não foi possível abrir o Claude separado."
-        alert.informativeText = "Confira se a instalação ainda está disponível na pasta de aplicativos gerenciados do Contas Codex."
+        let alert = NSAlert(); alert.messageText = L10n.text("launcher.openFailed")
+        alert.informativeText = L10n.text("launcher.checkInstallation")
         alert.runModal()
     }
 }
