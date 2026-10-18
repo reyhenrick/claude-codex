@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ensureRuntime, privateJSON, runtimeDirectory } from './runtime.mjs';
 import { models } from './model-catalog.mjs';
+import { applyContextDefaults } from './context-policy.mjs';
 import { ensureClientKey, readClientKey } from './client-auth.mjs';
 import { migrateProfile, migrationOptions, resolveMigrationSource } from './migrate-profile.mjs';
 const run = promisify(execFile);
@@ -54,7 +55,7 @@ export function profileConfig(catalog = models, clientKey) {
   return {
     inferenceProvider: 'gateway', inferenceCredentialKind: 'static', inferenceGatewayBaseUrl: 'http://127.0.0.1:18765',
     inferenceGatewayApiKey: clientKey, modelDiscoveryEnabled: false, modelCatalogEnabled: false,
-    inferenceModels: catalog.map(m => ({ name: m.id, labelOverride: m.label, maxEffort: 'max', ...(m.family ? { anthropicFamilyTier: m.family, isFamilyDefault: true } : {}) })),
+    inferenceModels: catalog.map(m => ({ name: m.id, labelOverride: m.label, maxEffort: 'max', supports1m: true, prefer1m: true, ...(m.family ? { anthropicFamilyTier: m.family, isFamilyDefault: true } : {}) })),
     alwaysStartWithDefaultModel: false,
     chatTabEnabled: true, isDesktopExtensionEnabled: true, userPluginMarketplacesEnabled: true, userPluginUploadsEnabled: true,
     disableBundledSkills: false, skillCreationEnabled: true, scheduledTasksEnabled: true, keepAwakeEnabled: true,
@@ -139,7 +140,7 @@ export async function createIsolated({ name, source, base = join(homedir(), 'Lib
     try { codeSettings = JSON.parse(await readFile(join(data, 'claude-code', 'settings.json'), 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     delete codeSettings.ultracode;
-    await privateJSON(join(data, 'claude-code', 'settings.json'), { ...codeSettings, enableWorkflows: true });
+    await privateJSON(join(data, 'claude-code', 'settings.json'), applyContextDefaults({ ...codeSettings, enableWorkflows: true }));
     await ensureClientKey(runtimeDirectory());
     const gatewayProfile = await configureGatewayProfile({ root: `${data}-3p`, name: 'Codex', activate: true, catalog: await availableProfileModels() });
     await mkdir(temporary, { mode: 0o700 }); temporaryIdentity = await lstat(temporary);

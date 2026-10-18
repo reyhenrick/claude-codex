@@ -18,6 +18,7 @@ func refreshProfileCatalog(dataDirectory: String, profileId: String, session: UR
         guard let id = model["id"] as? String, !id.isEmpty, id.count < 200,
               let label = model["display_name"] as? String, !label.isEmpty, label.count < 200 else { throw ProfileCatalogError.unavailable }
         var entry: [String: Any] = ["name": id, "labelOverride": label, "maxEffort": "max"]
+        if model["supports_1m"] as? Bool == true { entry["supports1m"] = true; entry["prefer1m"] = true }
         if let family = model["anthropic_family_tier"] as? String, ["sonnet", "opus", "haiku"].contains(family), model["is_family_default"] as? Bool == true {
             entry["anthropicFamilyTier"] = family; entry["isFamilyDefault"] = true
         }

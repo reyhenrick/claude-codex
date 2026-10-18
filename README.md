@@ -4,7 +4,7 @@
 
 Aplicativo nativo para a barra de menus do macOS que prepara uma instalação separada do Claude e conecta suas contas do Codex. A interface reúne limites de assinatura, créditos extras, resets e a ordem de uso das contas.
 
-Versão desta árvore: **1.0.1, build 3**. O código-fonte e os downloads ficam em [reyhenrick/codex-accounts](https://github.com/reyhenrick/codex-accounts) e nas [releases](https://github.com/reyhenrick/codex-accounts/releases).
+Versão desta árvore: **1.0.2, build 4**. O código-fonte e os downloads ficam em [reyhenrick/codex-accounts](https://github.com/reyhenrick/codex-accounts) e nas [releases](https://github.com/reyhenrick/codex-accounts/releases).
 
 ## O que faz
 
@@ -22,6 +22,14 @@ A gestão acontece na interface nativa. A conexão de conta abre a autorização
 O catálogo fixo em [Bridge/model-catalog.mjs](Bridge/model-catalog.mjs) oferece GPT-6.1 Sol, GPT-6 Luna e GPT-6 Astra. Sol e Astra têm variantes Normal, Fast e Ultrafast; Luna tem Normal e Fast. O bridge consulta as capacidades autenticadas de cada conta e só encaminha uma variante a contas que a anunciam. Normal solicita `service_tier: default`, Fast solicita `priority`, e Ultrafast solicita `ultrafast`. A disponibilidade e o consumo efetivos pertencem ao serviço OpenAI; solicitar Fast não garante uma prioridade efetivamente aplicada pelo fornecedor. Novos modelos entram por atualizações do aplicativo.
 
 A instalação habilita Workflows e mantém o seletor nativo de esforço: Low, Medium, High, Extra High e Max. Ela não impõe `xhigh` nem Ultracode como padrão global. Uma escolha explícita é preservada na chamada; Max continua sendo uma escolha da sessão, conforme o comportamento do Claude. O launcher atualiza os nomes GPT e as velocidades disponíveis antes de abrir uma instância separada nova. Uma instância já aberta é apenas trazida para frente: reabra-a para atualizar o menu de modelos após mudar as contas ou seus acessos. A escolha de conta no gerenciador vale para a próxima solicitação, sem depender dessa reabertura. Uma opção antiga sem acesso confirmado é recusada, sem troca silenciosa de velocidade. A consulta local de capacidades usa cache de até 60 segundos, invalidado na reconexão; a disponibilidade ainda pode mudar no fornecedor depois da consulta.
+
+### Contexto e compactação
+
+Todos os modelos do catálogo usam a opção nativa de contexto de 1 milhão. A criação da instalação configura `autoCompactWindow: 900000`; no Claude Code 2.1.299, as reservas de saída e resumo antecipam a compactação para aproximadamente 867 mil tokens. Um limite anterior válido que compacte mais cedo é preservado, inclusive quando salvo sob um alias do mesmo modelo. A janela total e o limite de entrada aceito pelo fornecedor são grandezas distintas; o catálogo não promete aceitar 1 milhão de tokens de entrada em uma chamada.
+
+Quando a OpenAI recusa uma entrada por excesso de contexto, o gateway preserva o erro e o apresenta no formato reconhecido pelo Claude Code. Isso permite que a compactação nativa tente reduzir a entrada e continuar. O gateway não corta mensagens nem reescreve os arquivos de histórico. A migração preserva os limites válidos de compactação e o esforço persistente por modelo; configurações inválidas ou incompatíveis são registradas no relatório.
+
+Os contadores de tokens de tarefas e Workflows incluem medidas acumuladas e, no caso de Workflows, vários agentes. Eles não representam o tamanho de uma única entrada atual.
 
 ## Requisitos e build
 

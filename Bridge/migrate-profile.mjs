@@ -22,7 +22,11 @@ const secretPatterns = [
 ];
 const desktopKeys = ['locale', 'scale', 'userThemeMode'];
 const preferenceKeys = ['menuBarEnabled', 'quickEntryShortcut', 'coworkBrowserToolsEnabled', 'coworkPreferredBrowser', 'sidebarMode', 'dockBounceEnabled', 'coworkWebSearchEnabled', 'keepAwakeEnabled', 'ccdScheduledTasksEnabled', 'coworkScheduledTasksEnabled'];
-const codeKeys = ['effortLevel', 'enableWorkflows', 'ultracode', 'theme', 'inputNeededNotifEnabled', 'agentPushNotifEnabled', 'voiceEnabled', 'skipWorkflowUsageWarning', 'alwaysThinkingEnabled', 'language', 'autoMemoryEnabled', 'respectGitignore'];
+const codeKeys = ['enableWorkflows', 'ultracode', 'theme', 'inputNeededNotifEnabled', 'agentPushNotifEnabled', 'voiceEnabled', 'skipWorkflowUsageWarning', 'alwaysThinkingEnabled', 'language', 'autoMemoryEnabled', 'respectGitignore'];
+const persistentEfforts = new Set(['low', 'medium', 'high', 'xhigh']);
+const reservedModelNames = new Set([...Object.getOwnPropertyNames(Object.prototype), 'prototype'].map(name => name.toLowerCase()));
+const validCompactWindow = value => Number.isInteger(value) && value >= 100000 && value <= 1000000;
+const safeModelName = name => name.length <= 256 && !/[\u0000-\u0020\u007f]/.test(name) && /^[A-Za-z0-9][A-Za-z0-9._:/-]*(?:@\d{8})?(?:\[1m\])?$/i.test(name) && !name.replace(/(?:@\d{8})?(?:\[1m\])?$/i, '').split(/[.:/]/).some(part => reservedModelNames.has(part.toLowerCase())) && !name.split(/[/:]/).some(part => part === '.' || part === '..');
 const maxEntries = 50000;
 const maxFile = 512 * 1024 * 1024;
 const maxText = 16 * 1024 * 1024;
@@ -560,6 +564,37 @@ async function reusableSkills(sourceCode, targetCode, stageCode, report) {
   }
 }
 
+function reusableCodeSettings(value, report) {
+  const result = pick(value, codeKeys);
+  const copyPreferences = (source, destination) => {
+    if (Object.hasOwn(source, 'autoCompactWindow')) {
+      if (validCompactWindow(source.autoCompactWindow)) destination.autoCompactWindow = source.autoCompactWindow;
+      else report.warn('migration.invalid_context_setting');
+    }
+    if (Object.hasOwn(source, 'effortLevel')) {
+      if (persistentEfforts.has(source.effortLevel)) destination.effortLevel = source.effortLevel;
+      else report.warn('migration.invalid_effort_setting');
+    }
+  };
+  copyPreferences(value, result);
+  if (Object.hasOwn(value, 'modelSettings')) {
+    if (!plain(value.modelSettings)) report.warn('migration.invalid_model_settings');
+    else {
+      const entries = [];
+      for (const [name, settings] of Object.entries(value.modelSettings)) {
+        if (!safeModelName(name) || secretKey.test(name)) { report.warn('migration.invalid_model_identifier'); continue; }
+        if (!plain(settings)) { report.warn('migration.invalid_model_settings'); continue; }
+        const retained = {};
+        copyPreferences(settings, retained);
+        if (Object.keys(settings).some(key => !['autoCompactWindow', 'effortLevel'].includes(key))) report.warn('migration.model_settings_fields_omitted');
+        if (Object.keys(retained).length) entries.push([name, retained]);
+      }
+      result.modelSettings = Object.fromEntries(entries);
+    }
+  }
+  return sanitizeMigrationValue(result, report.sanitizer);
+}
+
 async function reusableContext(sourceData, sourceCode, targetCode, stageData, stageCode, report, configEntry) {
   if (configEntry) {
     await writeExclusive(join(stageData, 'config.json'), jsonBytes(sanitizeMigrationValue(pick(configEntry.value, desktopKeys), report.sanitizer)));
@@ -576,7 +611,7 @@ async function reusableContext(sourceData, sourceCode, targetCode, stageData, st
   if (!sourceCode) return;
   const settings = await optionalJSON(sourceCode, 'settings.json', report, 'code_preferences');
   if (settings) {
-    await writeExclusive(join(stageCode, 'settings.json'), jsonBytes(sanitizeMigrationValue(pick(settings.value, codeKeys), report.sanitizer)));
+    await writeExclusive(join(stageCode, 'settings.json'), jsonBytes(reusableCodeSettings(settings.value, report)));
     report.add('copied', 'code_preferences', sourceCode, settings.path);
     if (settings.value.hooks || settings.value.permissions || settings.value.enabledPlugins || settings.value.extraKnownMarketplaces) report.warn('migration.executable_settings_not_activated');
   }

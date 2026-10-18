@@ -23,12 +23,13 @@ final class CatalogueURLProtocol: URLProtocol, @unchecked Sendable {
         try JSONSerialization.data(withJSONObject: original).write(to: file)
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [CatalogueURLProtocol.self]
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
-        CatalogueURLProtocol.payload = try JSONSerialization.data(withJSONObject: ["data":[["id":"claude-haiku-5-5", "display_name":"GPT-6 Luna", "anthropic_family_tier":"haiku", "is_family_default":true],["id":"anthropic.claude-haiku-5-5", "display_name":"GPT-6 Luna Fast"]]])
+        CatalogueURLProtocol.payload = try JSONSerialization.data(withJSONObject: ["data":[["id":"claude-haiku-5-5", "display_name":"GPT-6 Luna", "supports_1m":true, "anthropic_family_tier":"haiku", "is_family_default":true],["id":"anthropic.claude-haiku-5-5", "display_name":"GPT-6 Luna Fast", "supports_1m":true]]])
         if CommandLine.arguments.count > 1 { CatalogueURLProtocol.payload = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])) }
         try await refreshProfileCatalog(dataDirectory: root, profileId: profileId, session: session, authorize: { $0.setValue("Bearer " + String(repeating:"S",count:64), forHTTPHeaderField:"Authorization") })
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
         let models = saved["inferenceModels"] as! [[String: Any]]
         precondition(models.count == 2 && models[0]["labelOverride"] as? String == "GPT-6 Luna")
+        precondition(models.allSatisfy { $0["supports1m"] as? Bool == true && $0["prefer1m"] as? Bool == true })
         precondition(models[0]["anthropicFamilyTier"] as? String == "haiku" && models[1]["anthropicFamilyTier"] == nil)
         precondition(saved["alwaysStartWithDefaultModel"] as? Bool == false && saved["defaultModelEffort"] as? String == "xhigh")
         precondition(saved["inferenceGatewayApiKey"] as? String == String(repeating:"S",count:64))

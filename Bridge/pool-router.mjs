@@ -4,6 +4,7 @@ import { resolveModel } from './model-catalog.mjs';
 import { adaptMessage } from './model-adapter.mjs';
 import { BridgeError } from './pool-controller.mjs';
 import { authorizeClient } from './client-auth.mjs';
+import { createContextErrorTransform } from './context-errors.mjs';
 
 const forwardedHeaders = new Set(['anthropic-version', 'anthropic-beta', 'user-agent', 'accept',
   'x-client-request-id', 'x-session-id', 'x-claude-code-session-id', 'x-claude-code-parent-session-id',
@@ -53,7 +54,7 @@ export function createPoolRouter({ controller, getClientKey, getIngressKey, back
       }
       if (!authenticated) throw new BridgeError(401, 'Autenticação local obrigatória.');
       if (request.method === 'GET' && path === '/v1/models') {
-        const data = (await controller.availableModels()).map(m => ({ type: 'model', id: m.id, display_name: m.label,
+        const data = (await controller.availableModels()).map(m => ({ type: 'model', id: m.id, display_name: m.label, supports_1m: true,
           ...(m.family ? { anthropic_family_tier: m.family, is_family_default: true } : {}) }));
         json(response, 200, { data, has_more: false, first_id: data[0]?.id ?? null, last_id: data.at(-1)?.id ?? null }); return;
       }
@@ -123,9 +124,11 @@ export function createPoolRouter({ controller, getClientKey, getIngressKey, back
         if (incoming.statusCode >= 200 && incoming.statusCode < 300 && !countOnly) controller.markUsed(account);
         const responseHeaders = Object.fromEntries(Object.entries(incoming.headers).filter(([key]) =>
           ['content-type', 'content-length', 'cache-control', 'retry-after', 'request-id', 'x-request-id'].includes(key)));
+        const contextErrors = createContextErrorTransform(incoming);
+        if (contextErrors) delete responseHeaders['content-length'];
         response.writeHead(incoming.statusCode, { ...responseHeaders, 'cache-control': 'no-store' });
         // From this point onward, never replay the request or any partial tool output on another account.
-        pipeline(incoming, response, () => {}); return;
+        pipeline(...[incoming, contextErrors, response].filter(Boolean), () => {}); return;
       }
       throw new BridgeError(429, 'Nenhuma conta selecionada confirmou suporte a este modelo e modalidade com limite disponível. Consulte o painel de contas.');
     } catch (error) {

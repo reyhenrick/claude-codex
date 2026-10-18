@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.2
+
+- Contexto nativo de 1 milhão como padrão para todos os modelos disponíveis, com compactação antecipada para manter margem para ferramentas, respostas de agentes e resumo.
+- Compatibilidade dos erros de excesso de contexto da OpenAI com a recuperação nativa do Claude Code, tanto em respostas HTTP quanto em streams.
+- Preservação de limites anteriores de compactação e esforço por modelo durante a migração, incluindo aliases equivalentes.
+- Testes de fragmentação de streams, cancelamento, dados inválidos, migração de preferências e integração do catálogo com o launcher.
+
 ## 1.0.1
 
 - Autenticação privada no gateway local, sem chave fixa pública.

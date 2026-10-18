@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { migrateProfile, migrationOptions, resolveMigrationSource, sanitizeMigrationValue } from './migrate-profile.mjs';
 import { copyLauncherLocalizations, publishIsolatedInstallation } from './setup.mjs';
+import { applyContextDefaults } from './context-policy.mjs';
 
 const fixturesRoot = fileURLToPath(new URL('../build/migration-fixtures/', import.meta.url));
 const account = '11111111-1111-4111-8111-111111111111';
@@ -103,7 +104,8 @@ test('allowlisted context migrates with credentials excluded and safe MCP refere
   const content = (await Promise.all((await files(f.targetCodeRoot)).map(path => readFile(path, 'utf8')))).join('\n');
   assert.ok(!content.includes(token)); assert.ok(!content.includes('SYNTHETIC_DO_NOT_COPY'));
   assert.ok(content.includes('[REDACTED_CREDENTIAL]')); assert.ok(content.includes(f.targetCodeRoot + '/rules/careful.md'));
-  assert.deepEqual(JSON.parse(await readFile(join(f.targetCodeRoot, 'settings.json'))), { effortLevel: 'max', ultracode: true, theme: 'dark' });
+  assert.deepEqual(JSON.parse(await readFile(join(f.targetCodeRoot, 'settings.json'))), { ultracode: true, theme: 'dark' });
+  assert.ok(summary.warnings.includes('migration.invalid_effort_setting'));
   const mcp = JSON.parse(await readFile(join(f.targetCodeRoot, '.claude.json'))).mcpServers;
   assert.deepEqual(mcp.local, { command: 'npx', args: ['-y', 'example'] });
   assert.deepEqual(mcp.remote, { url: 'https://example.com/mcp', type: 'http' }); assert.equal(mcp.unsafe, undefined);
@@ -444,4 +446,71 @@ test('an official source without a Code directory still migrates available Deskt
  const result=await migrateProfile({...f,...source});
  assert.ok(result.warnings.includes('migration.code_root_unavailable'));
  assert.equal(JSON.parse(await readFile(join(f.targetDataRoot,'config.json'))).userThemeMode,'dark');
+});
+
+test('migrated context and effort preferences survive applyContextDefaults without importing unsafe fields', async t => {
+  const f = await fixture(t);
+  const modelSettings = Object.fromEntries([
+    ['claude-sonnet-5-5', { autoCompactWindow: 700000, effortLevel: 'high', env: { SERVICE_PASSWORD: 'opaque-context-secret' }, apiKey: 'opaque-context-secret', unknown: true }],
+    ['anthropic.claude-opus-5-5', { autoCompactWindow: 400000, effortLevel: 'xhigh', permissions: { defaultMode: 'bypassPermissions' }, hooks: { command: 'must not copy' } }],
+    ['claude-haiku-5-5@20260101[1m]', { autoCompactWindow: 500000, effortLevel: 'low' }],
+    ['claude-haiku-5-5@invalid', { autoCompactWindow: 200000 }],
+    ['constructor@20260101', { autoCompactWindow: 200000 }],
+    ['__proto__', { polluted: true, autoCompactWindow: 200000 }],
+    ['constructor', { autoCompactWindow: 200000 }],
+    ['prototype[1m]', { autoCompactWindow: 200000 }],
+    ['provider.constructor', { autoCompactWindow: 200000 }],
+    ['claude-haiku-5-5\n', { autoCompactWindow: 200000 }],
+    ['bad\u0000model', { autoCompactWindow: 200000 }],
+  ]);
+  await put(join(f.sourceCodeRoot, 'settings.json'), { autoCompactWindow: 800000, effortLevel: 'medium', modelSettings, env: { SERVICE_PASSWORD: 'opaque-context-secret' }, hooks: { command: 'must not copy' } });
+  const before = await hashes(f.sourceCodeRoot);
+  const result = await migrateProfile(f);
+  const migrated = JSON.parse(await readFile(join(f.targetCodeRoot, 'settings.json')));
+  assert.deepEqual(migrated, {
+    autoCompactWindow: 800000,
+    effortLevel: 'medium',
+    modelSettings: {
+      'claude-sonnet-5-5': { autoCompactWindow: 700000, effortLevel: 'high' },
+      'anthropic.claude-opus-5-5': { autoCompactWindow: 400000, effortLevel: 'xhigh' },
+      'claude-haiku-5-5@20260101[1m]': { autoCompactWindow: 500000, effortLevel: 'low' },
+    },
+  });
+  const applied = applyContextDefaults(migrated);
+  assert.equal(applied.autoCompactWindow, 800000);
+  assert.equal(applied.effortLevel, 'medium');
+  assert.deepEqual(applied.modelSettings['claude-sonnet-5-5'], { autoCompactWindow: 700000, effortLevel: 'high' });
+  assert.deepEqual(applied.modelSettings['claude-opus-5-5'], { autoCompactWindow: 400000, effortLevel: 'xhigh' });
+  assert.deepEqual(applied.modelSettings['claude-haiku-5-5'], { autoCompactWindow: 500000, effortLevel: 'low' });
+  assert.ok(!JSON.stringify(applied).includes('opaque-context-secret'));
+  assert.equal(Object.prototype.polluted, undefined);
+  assert.ok(result.warnings.includes('migration.invalid_model_identifier'));
+  assert.ok(result.warnings.includes('migration.model_settings_fields_omitted'));
+  assert.deepEqual(await hashes(f.sourceCodeRoot), before);
+});
+
+test('context migration validates window bounds, persistent effort and model settings shapes', async t => {
+  const f = await fixture(t);
+  await put(join(f.sourceCodeRoot, 'settings.json'), { autoCompactWindow: '800000', effortLevel: 'max', modelSettings: {
+    'lower-bound': { autoCompactWindow: 100000, effortLevel: 'low' },
+    'upper-bound[1m]': { autoCompactWindow: 1000000, effortLevel: 'medium' },
+    'too-low': { autoCompactWindow: 99999 },
+    'too-high': { autoCompactWindow: 1000001 },
+    fractional: { autoCompactWindow: 100000.5 },
+    coerced: { autoCompactWindow: '700000' },
+    'session-only-max': { autoCompactWindow: 300000, effortLevel: 'max' },
+    malformed: [],
+  } });
+  const result = await migrateProfile(f);
+  const migrated = JSON.parse(await readFile(join(f.targetCodeRoot, 'settings.json')));
+  assert.deepEqual(migrated, { modelSettings: {
+    'lower-bound': { autoCompactWindow: 100000, effortLevel: 'low' },
+    'upper-bound[1m]': { autoCompactWindow: 1000000, effortLevel: 'medium' },
+    'session-only-max': { autoCompactWindow: 300000 },
+  } });
+  for (const warning of ['migration.invalid_context_setting', 'migration.invalid_effort_setting', 'migration.invalid_model_settings']) assert.ok(result.warnings.includes(warning));
+  const report = JSON.parse(await readFile(result.report_path));
+  assert.equal(report.copied_files, 1);
+  assert.equal(report.skipped_files, 0);
+  assert.equal(report.status, 'completed');
 });
