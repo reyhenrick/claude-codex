@@ -4,7 +4,7 @@
 
 Aplicativo nativo para a barra de menus do macOS que prepara uma instalação separada do Claude e conecta suas contas do Codex. A interface reúne limites de assinatura, créditos extras, resets e a ordem de uso das contas.
 
-Versão desta árvore: **1.0.2, build 4**. O código-fonte e os downloads ficam em [reyhenrick/codex-accounts](https://github.com/reyhenrick/codex-accounts) e nas [releases](https://github.com/reyhenrick/codex-accounts/releases).
+Versão desta árvore: **1.0.0**. O código-fonte e os downloads ficam em [reyhenrick/claude-codex](https://github.com/reyhenrick/claude-codex) e nas [releases](https://github.com/reyhenrick/claude-codex/releases).
 
 ## O que faz
 
@@ -17,17 +17,31 @@ Versão desta árvore: **1.0.2, build 4**. O código-fonte e os downloads ficam 
 - Migra dados locais compatíveis para a nova instalação, preservando os originais e produzindo um relatório do que foi copiado ou ignorado.
 - Usa o primeiro idioma compatível das preferências do macOS: inglês, português, espanhol, francês, alemão ou italiano. Variantes regionais são reconhecidas; o idioma de fallback é inglês.
 
-A gestão acontece na interface nativa. A conexão de conta abre a autorização oficial da OpenAI no navegador.
+A gestão acontece na interface nativa. A conexão de conta abre a autorização oficial da OpenAI no navegador. Cada tentativa usa uma área isolada e só é incorporada depois de confirmar o e-mail. A reconexão aguarda as chamadas daquela conta terminarem e preserva a ordem de uso. Cancelar descarta a tentativa; uma falha de importação permite restaurar a conexão anterior. Quando a autorização passa a apontar para outro workspace, o reset automático dessa conta precisa ser autorizado novamente.
 
-O catálogo fixo em [Bridge/model-catalog.mjs](Bridge/model-catalog.mjs) oferece GPT-6.1 Sol, GPT-6 Luna e GPT-6 Astra. Sol e Astra têm variantes Normal, Fast e Ultrafast; Luna tem Normal e Fast. O bridge consulta as capacidades autenticadas de cada conta e só encaminha uma variante a contas que a anunciam. Normal solicita `service_tier: default`, Fast solicita `priority`, e Ultrafast solicita `ultrafast`. A disponibilidade e o consumo efetivos pertencem ao serviço OpenAI; solicitar Fast não garante uma prioridade efetivamente aplicada pelo fornecedor. Novos modelos entram por atualizações do aplicativo.
+O catálogo fixo em [Bridge/model-catalog.mjs](Bridge/model-catalog.mjs) oferece GPT-6.1 Sol, GPT-6 Luna e GPT-6 Astra. Sol e Astra têm variantes Normal, Fast e Ultrafast; Luna tem Normal e Fast. O bridge consulta as capacidades autenticadas de cada conta e só encaminha uma variante a contas que a anunciam. Normal solicita `service_tier: default`, Fast solicita `priority`, e Ultrafast solicita `ultrafast`. Ultra do Codex é um modo de orquestração com subagentes; escolher Ultrafast neste aplicativo seleciona a velocidade, sem ativar esse modo de orquestração. A disponibilidade e o consumo efetivos pertencem ao serviço OpenAI; solicitar Fast não garante uma prioridade efetivamente aplicada pelo fornecedor. Novos modelos entram por atualizações do aplicativo.
 
 A instalação habilita Workflows e mantém o seletor nativo de esforço: Low, Medium, High, Extra High e Max. Ela não impõe `xhigh` nem Ultracode como padrão global. Uma escolha explícita é preservada na chamada; Max continua sendo uma escolha da sessão, conforme o comportamento do Claude. O launcher atualiza os nomes GPT e as velocidades disponíveis antes de abrir uma instância separada nova. Uma instância já aberta é apenas trazida para frente: reabra-a para atualizar o menu de modelos após mudar as contas ou seus acessos. A escolha de conta no gerenciador vale para a próxima solicitação, sem depender dessa reabertura. Uma opção antiga sem acesso confirmado é recusada, sem troca silenciosa de velocidade. A consulta local de capacidades usa cache de até 60 segundos, invalidado na reconexão; a disponibilidade ainda pode mudar no fornecedor depois da consulta.
+
+### Nomes dos modelos e instruções dos agentes
+
+O serviço inclui em cada chamada um mapa entre os nomes reais e os identificadores de compatibilidade aceitos pelo Claude. O mapa informa o destino daquela chamada e as variantes anunciadas pelas contas selecionadas. Isso atende também a subagentes que omitem as instruções de usuário, como Explore e Plan, e mantém a contagem de tokens alinhada com a inferência.
+
+Ao criar uma instalação, o app gera `rules/claude-codex-models.md` na pasta isolada do Claude Code. Na inicialização do serviço atualizado, as regras das instalações gerenciadas existentes são renovadas, inclusive quando usam um launcher antigo. Uma regra pessoal com o mesmo nome é preservada. O mapa de cada chamada prevalece sobre o arquivo quando as capacidades mudam.
+
+A preparação do app preserva um mapa temporário ainda usado pelo serviço anterior. Apenas o processo que assume o serviço remove essa configuração, passando a usar o mapa atualizado em cada chamada.
+
+As instruções orientam usar Astra, Sol e Luna nas descrições e nos rótulos dos agentes, preservando a variante e o esforço pedidos. Também distinguem campos de ferramentas que aceitam IDs completos daqueles que aceitam somente famílias. Um rótulo não seleciona o modelo: deve descrever a seleção efetiva.
+
+O seletor principal usa os nomes GPT configurados. Nas versões do Claude Desktop examinadas, a coluna **Model** das tarefas usa um formatador próprio e ignora esses rótulos. Por isso, ela ainda pode mostrar Opus/Sonnet/Haiku ou ficar vazia para determinados IDs. O nome real e a variante podem aparecer na descrição ou no rótulo do agente; o Claude Codex não modifica os arquivos do aplicativo oficial para trocar essa coluna.
 
 ### Contexto e compactação
 
 Todos os modelos do catálogo usam a opção nativa de contexto de 1 milhão. A criação da instalação configura `autoCompactWindow: 900000`; no Claude Code 2.1.299, as reservas de saída e resumo antecipam a compactação para aproximadamente 867 mil tokens. Um limite anterior válido que compacte mais cedo é preservado, inclusive quando salvo sob um alias do mesmo modelo. A janela total e o limite de entrada aceito pelo fornecedor são grandezas distintas; o catálogo não promete aceitar 1 milhão de tokens de entrada em uma chamada.
 
 Quando a OpenAI recusa uma entrada por excesso de contexto, o gateway preserva o erro e o apresenta no formato reconhecido pelo Claude Code. Isso permite que a compactação nativa tente reduzir a entrada e continuar. O gateway não corta mensagens nem reescreve os arquivos de histórico. A migração preserva os limites válidos de compactação e o esforço persistente por modelo; configurações inválidas ou incompatíveis são registradas no relatório.
+
+O protocolo de resposta mantém o identificador de modelo solicitado quando o fornecedor confirma o modelo equivalente, evitando incompatibilidades de compactação em clientes mais antigos. Os identificadores individuais dos subagentes são preservados. Depois do início de uma resposta em streaming, o gateway envia sinais de atividade durante períodos silenciosos de raciocínio, sem repetir a chamada. O serviço encerra uma conexão que fique 30 minutos sem receber bytes do fornecedor, mesmo que os sinais locais de atividade continuem; esse limite operacional não é uma estimativa da duração do raciocínio.
 
 Os contadores de tokens de tarefas e Workflows incluem medidas acumuladas e, no caso de Workflows, vários agentes. Eles não representam o tamanho de uma única entrada atual.
 
@@ -46,8 +60,8 @@ Para compilar o código-fonte:
 - Python 3.12 ou posterior, disponível como `python3`.
 
 ```sh
-git clone https://github.com/reyhenrick/codex-accounts.git
-cd codex-accounts
+git clone https://github.com/reyhenrick/claude-codex.git
+cd claude-codex
 ./build.sh
 ```
 
@@ -88,7 +102,7 @@ A migração escreve apenas nos destinos novos. Arquivos ilegíveis, formatos in
 
 ## Limites, créditos e troca de conta
 
-Antes de admitir uma inferência, o serviço consulta o uso. Uma cota desconhecida ou uma consulta inválida impede o uso daquela conta. No modo automático, as assinaturas seguem a ordem escolhida. No modo fixo, o gerenciador não passa para outra conta.
+Antes de admitir uma inferência, o serviço consulta o uso. Uma cota desconhecida ou uma consulta inválida impede o uso daquela conta. Um limite adicional identificado como exclusivo de um modelo é aplicado somente a esse modelo; limites de escopo desconhecido continuam conservadores. No modo automático, as assinaturas seguem a ordem escolhida. No modo fixo, o gerenciador não passa para outra conta.
 
 A troca vale para a próxima chamada ao modelo de cada conversa. Ela pode ocorrer após uma ferramenta, ainda durante a resposta à mesma mensagem. A chamada em andamento termina na conta em que começou. O serviço encaminha o histórico e os resultados de ferramentas necessários à continuação; não transfere uma resposta parcialmente recebida.
 
@@ -114,7 +128,9 @@ O atualizador funciona quando o Claude Codex está em `/Applications` ou `~/Appl
 
 Antes de instalar, o aplicativo prepara o serviço para concluir chamadas ao modelo, resets, autorizações e alterações de conta já em andamento. A instalação aguarda a liberação dessas operações. A recuperação do serviço faz parte do fluxo de atualização e possui um processo independente para os casos em que o instalador não relança a interface. Desativar instalações automáticas vale para atualizações futuras; se uma atualização já foi baixada e preparada, o aplicativo avisa que ela será instalada ao sair, conforme o comportamento do Sparkle.
 
-O feed configurado aponta para o `appcast.xml` das [releases do projeto](https://github.com/reyhenrick/codex-accounts/releases). Cada versão distribuída inclui o feed e o ZIP assinados, além dos metadados e hashes dos artefatos.
+Se o aplicativo for substituído manualmente, a interface confere a versão e a localização do serviço em execução. A transição aguarda as operações em andamento e continua mesmo quando o painel é fechado. Instalações antigas que exigem uma transição específica são identificadas no painel.
+
+O feed configurado aponta para o `appcast.xml` das [releases do projeto](https://github.com/reyhenrick/claude-codex/releases). Cada versão distribuída inclui o feed e o ZIP assinados, além dos metadados e hashes dos artefatos.
 
 O app exige assinaturas Ed25519 válidas no feed e no ZIP antes da extração. A chave pública integra o aplicativo; a chave privada de publicação permanece no Keychain do mantenedor. A assinatura de atualização autentica os artefatos e é registrada separadamente da assinatura Apple e da notarização.
 
@@ -140,7 +156,7 @@ npm --prefix Bridge ci --ignore-scripts
 ./Scripts/test.sh
 ```
 
-Os testes do bridge usam contas, credenciais e respostas sintéticas. Exercitam roteamento, cotas, créditos, resets, concorrência, streams, configuração e migração. As verificações de idioma conferem a paridade dos catálogos, chaves duplicadas, placeholders, referências estáticas no Swift e a seleção/fallback de idioma pelo Foundation. Os testes do atualizador cobrem a preparação do serviço e a validação criptográfica de artefatos sintéticos.
+Os testes do bridge usam contas, credenciais e respostas sintéticas. Exercitam roteamento, cotas, créditos, resets, concorrência, reconexão, cancelamento, recuperação de importações, streams fragmentados, identificação de subagentes, configuração e migração. As verificações de idioma conferem a paridade dos catálogos, chaves duplicadas, placeholders, referências estáticas no Swift e a seleção/fallback de idioma pelo Foundation. Os testes do atualizador cobrem a preparação do serviço e a validação criptográfica de artefatos sintéticos.
 
 Esses testes locais não comprovam toda a interface do Claude, a retomada visual de cada histórico importado, a execução em hardware Intel ou um reset financeiro real. Build universal, testes de política, testes de assinatura, inspeção da interface e operações reais são evidências distintas.
 
@@ -155,7 +171,7 @@ Esses testes locais não comprovam toda a interface do Claude, a retomada visual
 
 `package-release.sh` gera `ClaudeCodex-macOS.dmg`, `ClaudeCodex-macOS.zip`, `release-metadata.json` e `SHA256SUMS.txt` em `dist/`. O pacote sem feed pode ser verificado com `./Scripts/verify-release.sh dist`.
 
-`sign-release.sh` é uma operação local do mantenedor e exige a chave de atualização já provisionada no Keychain, na conta `com.henrick.codex-accounts.sparkle`. O gerador lê essa chave diretamente; o procedimento não exporta a chave privada. Ele assina o ZIP e o feed, incorpora as notas de [CHANGELOG.md](CHANGELOG.md) e verifica versões, URLs, assinaturas e hashes. Os scripts não publicam releases nem submetem o aplicativo à notarização da Apple.
+`sign-release.sh` é uma operação local do mantenedor e exige a chave de atualização já provisionada no Keychain, na conta `com.henrick.codex-accounts.sparkle`. O gerador lê essa chave diretamente; o procedimento não exporta a chave privada. Ele assina o ZIP e o feed, incorpora as notas de [RELEASE_NOTES.md](RELEASE_NOTES.md) e verifica versões, URLs, assinaturas e hashes. Os scripts não publicam releases nem submetem o aplicativo à notarização da Apple.
 
 ### Organização
 

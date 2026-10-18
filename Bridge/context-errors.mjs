@@ -1,4 +1,4 @@
-import { Transform } from 'node:stream';
+import { BoundedJSONTransform, BoundedSSETransform } from './message-transforms.mjs';
 
 export const contextErrorBufferBytes = 64 * 1024;
 const openAIContextMessage = 'Your input exceeds the context window of this model. Please adjust your input and try again.';
@@ -18,37 +18,6 @@ function normalizeError(bytes) {
     type: 'error',
     error: { ...error, type: 'invalid_request_error', code: 'context_length_exceeded', message: `prompt is too long. OpenAI: ${detail}` },
   }));
-}
-
-class JSONContextErrorTransform extends Transform {
-  constructor() {
-    super();
-    this.buffer = Buffer.allocUnsafe(contextErrorBufferBytes);
-    this.length = 0;
-    this.passthrough = false;
-  }
-
-  _transform(chunk, encoding, callback) {
-    if (this.passthrough) this.push(chunk);
-    else if (this.length + chunk.length > this.buffer.length) {
-      if (this.length) this.push(this.buffer.subarray(0, this.length));
-      this.buffer = null;
-      this.passthrough = true;
-      this.push(chunk);
-    } else {
-      chunk.copy(this.buffer, this.length);
-      this.length += chunk.length;
-    }
-    callback();
-  }
-
-  _flush(callback) {
-    if (!this.passthrough) {
-      const bytes = this.buffer.subarray(0, this.length);
-      this.push(normalizeError(bytes) ?? bytes);
-    }
-    callback();
-  }
 }
 
 function normalizeEvent(bytes) {
@@ -77,61 +46,14 @@ function normalizeEvent(bytes) {
   }).join(''));
 }
 
-class SSEContextErrorTransform extends Transform {
-  constructor() {
-    super();
-    this.buffer = Buffer.allocUnsafe(contextErrorBufferBytes);
-    this.length = 0;
-    this.lineLength = 0;
-    this.lastByte = 0;
-    this.passthrough = false;
-  }
-
-  append(chunk) {
-    if (this.passthrough) this.push(chunk);
-    else if (this.length + chunk.length > this.buffer.length) {
-      if (this.length) this.push(Buffer.from(this.buffer.subarray(0, this.length)));
-      this.length = 0;
-      this.passthrough = true;
-      this.push(chunk);
-    } else {
-      chunk.copy(this.buffer, this.length);
-      this.length += chunk.length;
-    }
-  }
-
-  _transform(chunk, encoding, callback) {
-    let start = 0;
-    for (let index = 0; index < chunk.length; index++) {
-      const byte = chunk[index];
-      const boundary = byte === 10 && (this.lineLength === 0 || (this.lineLength === 1 && this.lastByte === 13));
-      this.lineLength = byte === 10 ? 0 : Math.min(this.lineLength + 1, 2);
-      this.lastByte = byte;
-      if (!boundary) continue;
-      this.append(chunk.subarray(start, index + 1));
-      if (!this.passthrough) this.push(normalizeEvent(Buffer.from(this.buffer.subarray(0, this.length))));
-      this.length = 0;
-      this.passthrough = false;
-      start = index + 1;
-    }
-    if (start < chunk.length) this.append(chunk.subarray(start));
-    callback();
-  }
-
-  _flush(callback) {
-    if (this.length) this.push(Buffer.from(this.buffer.subarray(0, this.length)));
-    callback();
-  }
-}
-
 export function createContextErrorTransform(response) {
   if (response.headers['content-encoding'] && response.headers['content-encoding'] !== 'identity') return null;
   const contentType = response.headers['content-type'] ?? '';
-  if (/^text\/event-stream(?:\s*;|\s*$)/i.test(contentType)) return new SSEContextErrorTransform();
+  if (/^text\/event-stream(?:\s*;|\s*$)/i.test(contentType)) return new BoundedSSETransform(normalizeEvent, contextErrorBufferBytes);
   if (response.statusCode === 400 && /^application\/(?:json|[\w.+-]+\+json)(?:\s*;|\s*$)/i.test(contentType)) {
     const length = response.headers['content-length'];
     if (typeof length === 'string' && /^\d+$/.test(length) && Number(length) > contextErrorBufferBytes) return null;
-    return new JSONContextErrorTransform();
+    return new BoundedJSONTransform(normalizeError, contextErrorBufferBytes);
   }
   return null;
 }

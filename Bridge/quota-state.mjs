@@ -1,17 +1,53 @@
+import { baseModels } from './model-catalog.mjs';
+
 const emptyCredits = () => ({ known: false, has_credits: null, unlimited: null, balance: null, eligible: false });
-const count = n => Number.isInteger(n) && n >= 0 ? n : null;
+const count = n => Number.isSafeInteger(n) && n >= 0 ? n : null;
+const maximumTimestampSeconds = 8640000000000; // The representable JavaScript Date range.
+const timestamp = n => Number.isSafeInteger(n) && n >= 0 && n <= maximumTimestampSeconds;
+const modelScopes = new Map(baseModels.flatMap(model => [[model.id.toLowerCase(), model.id], [model.label.toLowerCase(), model.id]]));
+// OpenAI documents Spark's separate model-specific allowance. Keep its windows
+// visible, but do not apply that allowance to Sol, Luna or Astra.
+// https://learn.chatgpt.com/docs/changelog#codex-2026-02-12
+modelScopes.set('gpt-5.3-codex-spark', 'gpt-5.3-codex-spark');
+
+function additionalModel(item) {
+  const names = [item?.limit_name, item?.name].filter(value => value != null);
+  const scopes = names.map(name => typeof name === 'string' ? modelScopes.get(name.trim().toLowerCase()) : undefined);
+  // Unknown or contradictory names remain unscoped and apply conservatively.
+  return scopes.length && scopes.every(scope => scope && scope === scopes[0]) ? scopes[0] : null;
+}
+const permits = group => group.valid && group.allowed && !group.reached && group.windows.every(window => window.used_percent < 100);
+const depleted = group => group.valid && (group.reached || group.windows.some(window => window.used_percent >= 100));
+const applicableGroups = (groups, baseModel) => groups.filter(group => group.base_model === null || group.base_model === baseModel);
+
 export function unknownQuota(reason = 'unknown') {
   return { eligible: false, reason, windows: [], subscription_status: 'unknown', ordinary_allowed: null,
-    remaining_percent: null, additional_allowed: false, credits: emptyCredits(),
+    remaining_percent: null, additional_allowed: false, additional_limits: [], credits: emptyCredits(),
     resets: { known: false, available_count: null, applicable_count: null } };
 }
 function readGroup(value, name) {
   if (!value || typeof value.allowed !== 'boolean' || typeof value.limit_reached !== 'boolean') return null;
   const raw = [value.primary_window, value.secondary_window].filter(w => w != null);
-  if (!raw.length || raw.some(w => !Number.isFinite(w.used_percent) || w.used_percent < 0 || !Number.isFinite(w.limit_window_seconds) || w.limit_window_seconds <= 0)) return null;
+  if (!raw.length || raw.some(w => !Number.isFinite(w.used_percent) || w.used_percent < 0 ||
+      !Number.isSafeInteger(w.limit_window_seconds) || w.limit_window_seconds <= 0 ||
+      (w.reset_at != null && !timestamp(w.reset_at)))) return null;
   return { allowed: value.allowed, reached: value.limit_reached, windows: raw.map(w => ({ name,
-    used_percent: w.used_percent, window_seconds: w.limit_window_seconds, reset_at: Number.isFinite(w.reset_at) ? w.reset_at : null })) };
+    used_percent: w.used_percent, window_seconds: w.limit_window_seconds, reset_at: w.reset_at ?? null })) };
 }
+
+// Read a model-specific view without replacing the original snapshot, whose
+// identity is also used by the controller's quota and reset proofs.
+export function quotaForModel(quota, requestedBaseModel) {
+  if (!baseModels.some(model => model.id === requestedBaseModel) || !Array.isArray(quota?.additional_limits)) {
+    return { eligible: false, additional_allowed: false, reason: 'unknown' };
+  }
+  const groups = applicableGroups(quota.additional_limits, requestedBaseModel);
+  const allowed = quota.additional_allowed === true && groups.every(permits);
+  const eligible = quota.eligible === true && allowed;
+  const reason = eligible ? 'available' : !allowed && groups.some(depleted) ? 'exhausted' : !allowed ? 'unknown' : quota.reason;
+  return { eligible, additional_allowed: allowed, reason };
+}
+
 export function evaluateQuota(usage) {
   const result = unknownQuota();
   const credit = usage?.credits;
@@ -36,11 +72,19 @@ export function evaluateQuota(usage) {
   else if (main.allowed && result.remaining_percent > 0) result.subscription_status = 'available';
   const additions = usage.additional_rate_limits ?? [];
   if (!Array.isArray(additions)) return result;
-  const groups = additions.map(item => readGroup(item?.rate_limit, item?.limit_name ?? item?.name ?? 'Limite adicional'));
-  result.windows.push(...groups.filter(Boolean).flatMap(g => g.windows));
-  result.additional_allowed = groups.every(g => g && g.allowed && !g.reached && g.windows.every(w => w.used_percent < 100));
+  const groups = additions.map(item => {
+    const label = item?.limit_name ?? item?.name;
+    const group = readGroup(item?.rate_limit, typeof label === 'string' && label.trim() ? label : 'Limite adicional');
+    return { base_model: additionalModel(item), valid: Boolean(group), allowed: false, reached: false, windows: [], ...group };
+  });
+  result.additional_limits = groups;
+  result.windows.push(...groups.flatMap(group => group.windows));
+  // The account panel is a summary: one model-specific cap does not make every
+  // current model unavailable. Inference must use quotaForModel for its choice.
+  result.additional_allowed = baseModels.some(model => applicableGroups(groups, model.id).every(permits));
   result.eligible = result.subscription_status === 'available' && result.additional_allowed && usage.spend_control?.reached !== true;
-  result.reason = result.eligible ? 'available' : result.subscription_status === 'exhausted' || result.remaining_percent === 0 || groups.some(g => g && (g.reached || g.windows.some(w => w.used_percent >= 100))) ? 'exhausted' : 'unknown';
+  result.reason = result.eligible ? 'available' : result.subscription_status === 'exhausted' || result.remaining_percent === 0 ||
+    !result.additional_allowed && groups.some(depleted) ? 'exhausted' : 'unknown';
   return result;
 }
 export function creditPermission(state, rows) {

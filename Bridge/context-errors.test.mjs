@@ -29,6 +29,7 @@ async function fixture(t, respond) {
   const accounts = [{ email: 'first@example.test', prefix: 'conta-01' }, { email: 'second@example.test', prefix: 'conta-02' }];
   const controller = {
     resetInFlight: new Map(), readState: async () => ({}),
+    instructionModels: () => [],
     async *candidates() { for (const account of accounts) { selected.push(account); yield account; } },
     validateCandidate: async () => true, validateCandidateNow: () => true,
     acquire: account => () => released.push(account),
@@ -131,7 +132,7 @@ test('unrelated HTTP 400 JSON remains byte-exact and cannot rotate accounts', as
   assertSingleRequest(f);
 });
 
-test('non-JSON and successful JSON preserve content length and bytes', async t => {
+test('non-JSON and non-message JSON preserve bytes, with explicit content length only on uninspected bodies', async t => {
   for (const [status, type, bytes] of [
     [400, 'text/plain', Buffer.from(openAIMessage)],
     [400, 'text/html', Buffer.from(`<p>${openAIMessage}</p>`)],
@@ -143,7 +144,7 @@ test('non-JSON and successful JSON preserve content length and bytes', async t =
       const f = await fixture(t, response => { response.writeHead(status, { 'content-type': type, 'content-length': bytes.length }); response.end(bytes); });
       const response = await f.post();
       assert.equal(response.status, status);
-      assert.equal(response.headers.get('content-length'), String(bytes.length));
+      assert.equal(response.headers.get('content-length'), status === 200 && type === 'application/json' ? null : String(bytes.length));
       assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
       assertSingleRequest(f);
     });

@@ -4,10 +4,12 @@ import { resolveModel } from './model-catalog.mjs';
 import { adaptMessage } from './model-adapter.mjs';
 import { BridgeError } from './pool-controller.mjs';
 import { authorizeClient } from './client-auth.mjs';
+import { guardUpstreamSilence, upstreamIdleTimeoutMs } from './upstream-idle.mjs';
+import { createModelResponseTransform } from './model-response.mjs';
 import { createContextErrorTransform } from './context-errors.mjs';
 
 const forwardedHeaders = new Set(['anthropic-version', 'anthropic-beta', 'user-agent', 'accept',
-  'x-client-request-id', 'x-session-id', 'x-claude-code-session-id', 'x-claude-code-parent-session-id',
+  'x-client-request-id', 'x-session-id', 'x-claude-code-agent-id', 'x-claude-code-parent-agent-id', 'x-claude-code-session-id', 'x-claude-code-parent-session-id',
   'x-stainless-lang', 'x-stainless-package-version', 'x-stainless-os', 'x-stainless-arch',
   'x-stainless-runtime', 'x-stainless-runtime-version']);
 
@@ -29,7 +31,7 @@ async function readBody(request, maximum) {
   return value;
 }
 
-export function createPoolRouter({ controller, getClientKey, getIngressKey, backendPort = 18768, maxBodyBytes = 64 * 1024 * 1024 }) {
+export function createPoolRouter({ controller, getClientKey, getIngressKey, serviceIdentity, backendPort = 18768, upstreamIdleMs = upstreamIdleTimeoutMs, streamHeartbeatMs = 15000, maxBodyBytes = 64 * 1024 * 1024 }) {
   if (typeof getIngressKey !== 'function') throw new Error('A autenticação local do aplicativo é obrigatória.');
   let activeRequests = 0;
   let draining = controller.pausedForUpdate === true;
@@ -50,7 +52,7 @@ export function createPoolRouter({ controller, getClientKey, getIngressKey, back
       if (request.method === 'GET' && path === '/healthz') {
         if (!authenticated) { json(response, 200, { status: 'ok', backend: 'codex-pool' }); return; }
         const state = await controller.readState();
-        json(response, 200, { status: 'ok', backend: 'codex-pool', active_requests: activeRequests, reset_requests: controller.resetInFlight.size, pending_oauth: state.pending_oauth ? 1 : 0, pending_actions: activeActions, draining }); return;
+        json(response, 200, { status: 'ok', backend: 'codex-pool', ...(serviceIdentity ? { service: serviceIdentity } : {}), active_requests: activeRequests, reset_requests: controller.resetInFlight.size, pending_oauth: state.pending_oauth ? 1 : 0, pending_actions: activeActions, draining }); return;
       }
       if (!authenticated) throw new BridgeError(401, 'Autenticação local obrigatória.');
       if (request.method === 'GET' && path === '/v1/models') {
@@ -99,15 +101,19 @@ export function createPoolRouter({ controller, getClientKey, getIngressKey, back
       response.once('close', settle); response.once('finish', settle);
       const countOnly = path.endsWith('/count_tokens');
       const key = await getClientKey();
+      // Take a confirmed cache snapshot after candidate validation, without
+      // waiting on capabilities of an account this call does not need.
+      let instructionCatalogue;
       for await (const account of controller.candidates({ model: value.model, countOnly, signal: abort.signal })) {
         if (!await controller.validateCandidate(account)) continue;
+        instructionCatalogue ??= controller.instructionModels(account);
         const releaseAccount = controller.acquire(account);
         if (!releaseAccount) continue;
         activeRelease = releaseAccount;
         let incoming;
         try {
         let body;
-        try { body = Buffer.from(JSON.stringify(adaptMessage(value, account.prefix))); }
+        try { body = Buffer.from(JSON.stringify(adaptMessage(value, account.prefix, instructionCatalogue))); }
         catch (error) { throw new BridgeError(400, error.message); }
         const headers = Object.fromEntries(Object.entries(request.headers).filter(([key]) => forwardedHeaders.has(key)));
         Object.assign(headers, { authorization: `Bearer ${key}`, 'content-type': 'application/json', 'content-length': body.length });
@@ -123,12 +129,14 @@ export function createPoolRouter({ controller, getClientKey, getIngressKey, back
         if (response.destroyed) { incoming.destroy(); return; }
         if (incoming.statusCode >= 200 && incoming.statusCode < 300 && !countOnly) controller.markUsed(account);
         const responseHeaders = Object.fromEntries(Object.entries(incoming.headers).filter(([key]) =>
-          ['content-type', 'content-length', 'cache-control', 'retry-after', 'request-id', 'x-request-id'].includes(key)));
+          ['content-type', 'content-length', 'content-encoding', 'cache-control', 'retry-after', 'request-id', 'x-request-id'].includes(key)));
         const contextErrors = createContextErrorTransform(incoming);
-        if (contextErrors) delete responseHeaders['content-length'];
+        const modelResponse = countOnly ? null : createModelResponseTransform(incoming, value.model, { idleMs: streamHeartbeatMs });
+        if (contextErrors || modelResponse) delete responseHeaders['content-length'];
         response.writeHead(incoming.statusCode, { ...responseHeaders, 'cache-control': 'no-store' });
         // From this point onward, never replay the request or any partial tool output on another account.
-        pipeline(...[incoming, contextErrors, response].filter(Boolean), () => {}); return;
+        const stopIdleGuard = guardUpstreamSilence(incoming, upstreamIdleMs);
+        pipeline(...[incoming, contextErrors, modelResponse, response].filter(Boolean), () => { stopIdleGuard(); }); return;
       }
       throw new BridgeError(429, 'Nenhuma conta selecionada confirmou suporte a este modelo e modalidade com limite disponível. Consulte o painel de contas.');
     } catch (error) {

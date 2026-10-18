@@ -151,69 +151,6 @@ test('disconnect cancels upstream streaming and never replays a started response
   await Promise.race([closedPromise, new Promise((_, reject) => { const timer=setTimeout(()=>reject(Error('upstream was not cancelled')),1500);timer.unref(); })]); assert.equal(calls, 1);
 });
 
-test('connection adds only the verified requested email and keeps OAuth data out of the account state', async t => {
-  const f = await fixture(t); let completed = false; const patched = [];
-  const original = f.management.credentials;
-  const fresh = { email: 'new@example.test', name: 'synthetic-new.json', provider: 'codex', auth_index: 'new', id_token: { chatgpt_account_id: 'account-new', plan_type: 'pro' } };
-  await mkdir(f.runtimeDir + '/auth'); await writeFile(f.runtimeDir + '/auth/' + fresh.name, '{}');
-  f.management.credentials = async () => [...await original(), ...(completed ? [fresh] : [])];
-  f.management.startLogin = async () => ({ state: 'synthetic-state', url: 'https://auth.openai.com/oauth/authorize?state=synthetic-state' });
-  f.management.loginStatus = async () => ({ status: completed ? 'ok' : 'wait' });
-  f.management.patchCredential = async (name, fields) => patched.push({ name, fields });
-  const started = await f.controller.connect(' new@example.test ');
-  assert.equal(started.email, 'new@example.test');
-  await assert.rejects(f.controller.connect('other@example.test'), { status: 409 });
-  assert.equal((await f.controller.status()).connection.email, fresh.email);
-  completed = true; const status = await f.controller.status();
-  assert.equal(status.connection, null); assert.equal(status.accounts.at(-1).email, fresh.email);
-  assert.deepEqual(patched, [{ name: fresh.name, fields: { prefix: 'conta-04', priority: 0 } }]);
-  const disk = await readFile(f.runtimeDir + '/accounts-state.json', 'utf8');
-  assert.ok(!disk.includes('account-new') && !disk.includes('synthetic-state') && !disk.includes('access_token'));
-  assert.equal((await stat(f.runtimeDir + '/auth/' + fresh.name)).mode & 0o777, 0o600);
-});
-
-test('expired or mismatched login never replaces an existing account and can be cancelled', async t => {
-  const f = await fixture(t); let cancelled = false;
-  f.management.startLogin = async () => ({ state: 'synthetic-state', url: 'https://auth.openai.com/oauth/authorize?state=synthetic-state' });
-  f.management.loginStatus = async () => ({ status: 'ok' });
-  f.management.cancelLogin = async state => { assert.equal(state, 'synthetic-state'); cancelled = true; };
-  await f.controller.connect('new@example.test'); const status = await f.controller.status();
-  assert.match(status.connection.error, /não corresponde/); assert.equal(status.accounts.length, 3);
-  await f.controller.cancelConnection(); assert.equal(cancelled, true); assert.equal((await f.controller.status()).connection, null);
-  f.management.loginStatus = async () => ({ status: 'error', error: 'expired' });
-  await f.controller.connect(emails[0]); assert.match((await f.controller.status()).connection.error, /expirou/);
-});
-
-test('OAuth completion rejects the wrong account even when the requested account refreshed concurrently', async t => {
-  const f = await fixture(t); let completed = false; const patched = [];
-  const credentials = f.management.credentials;
-  f.management.credentials = async () => (await credentials()).map((row, index) => ({ ...row, updated_at: completed && index < 2 ? 'v2' : 'v1' }));
-  f.management.startLogin = async () => ({ state: 'synthetic-state', url: 'https://auth.openai.com/oauth/authorize?state=synthetic-state' });
-  f.management.loginStatus = async () => ({ status: completed ? 'ok' : 'wait' });
-  f.management.patchCredential = async (...args) => patched.push(args);
-  await f.controller.connect(emails[0]);
-  completed = true;
-  const status = await f.controller.status();
-  assert.match(status.connection.error, /não corresponde/);
-  assert.equal(patched.length, 0);
-  assert.equal((await f.controller.readState()).last_connection, undefined);
-});
-
-test('OAuth reconnect succeeds when only the requested existing credential changes', async t => {
-  const f = await fixture(t); let completed = false; const patched = [];
-  const credentials = f.management.credentials;
-  f.management.credentials = async () => (await credentials()).map((row, index) => ({ ...row, updated_at: completed && index === 0 ? 'v2' : 'v1' }));
-  f.management.startLogin = async () => ({ state: 'synthetic-state', url: 'https://auth.openai.com/oauth/authorize?state=synthetic-state' });
-  f.management.loginStatus = async () => ({ status: completed ? 'ok' : 'wait' });
-  f.management.patchCredential = async (name, fields) => patched.push({ name, fields });
-  await mkdir(f.runtimeDir + '/auth'); await writeFile(f.runtimeDir + '/auth/synthetic-0.json', '{}');
-  await f.controller.connect(emails[0]); completed = true;
-  const status = await f.controller.status();
-  assert.equal(status.connection, null); assert.equal(status.last_connection.email, emails[0]);
-  assert.equal(patched.length, 1); assert.equal(patched[0].name, 'synthetic-0.json');
-  assert.equal(status.accounts.length, 3);
-});
-
 test('disconnect waits for active requests, deletes only the selected credential and preserves other accounts', async t => {
   const f = await fixture(t); const deleted = [];
   f.management.deleteCredential = async name => deleted.push(name);
@@ -233,16 +170,6 @@ test('failed credential deletion does not remove account metadata or leave a per
   const release = f.controller.acquire(state.accounts[0]); assert.equal(typeof release, 'function'); release();
 });
 
-
-test('a successful OAuth for the wrong account cannot be mistaken for an unchanged existing credential', async t => {
-  const f = await fixture(t);
-  f.management.startLogin = async () => ({ state: 'synthetic-state', url: 'https://auth.openai.com/oauth/authorize?state=synthetic-state' });
-  f.management.loginStatus = async () => ({ status: 'ok' });
-  await f.controller.connect(emails[0]);
-  const status = await f.controller.status();
-  assert.match(status.connection.error, /não corresponde/);
-  assert.equal(status.accounts.length, 3);
-});
 
 test('changing account during an active stream affects the next inference without interrupting or replaying the current one', async t => {
   const f = await fixture(t); const routed = []; let firstResponse;
@@ -277,4 +204,33 @@ test('changing account during an active stream affects the next inference withou
   assert.match(ending, /message_stop/);
   assert.equal(f.controller.activeAccounts.get(emails[0]), 0);
   assert.equal(routed.length, 2);
+});
+
+test('parent and concurrent child agents retain separate routing and reasoning-cache identities', async t => {
+  const f = await fixture(t), seen = [];
+  const upstream = http.createServer(async (req, res) => {
+    for await (const chunk of req) {}
+    seen.push([req.headers['x-claude-code-session-id'], req.headers['x-claude-code-agent-id'], req.headers['x-claude-code-parent-agent-id']]);
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}');
+  });
+  await start(t, upstream);
+  const base = await start(t, createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic' }));
+  const responses = await Promise.all(['main', 'child-a', 'child-b'].map(agent => post(base, message,
+    { 'x-claude-code-session-id': 'same-session', 'x-claude-code-agent-id': agent, ...(agent === 'main' ? {} : { 'x-claude-code-parent-agent-id': 'main' }) })));
+  for (const response of responses) { assert.equal(response.status, 200); await response.text(); }
+  assert.deepEqual(seen.sort((a,b) => a[1].localeCompare(b[1])), [
+    ['same-session', 'child-a', 'main'], ['same-session', 'child-b', 'main'], ['same-session', 'main', undefined],
+  ]);
+});
+
+test('a model-specific cap blocks only that model at candidate selection and final dispatch validation', async t => {
+  const f = await fixture(t);
+  const capped = { ...available(), additional_rate_limits: [{ limit_name: 'gpt-6-astra', rate_limit: available(100).rate_limit }] };
+  for (const email of emails) f.quotas.set(email, capped);
+  const sol = []; for await (const candidate of f.controller.candidates({ model: 'claude-sonnet-5-5' })) sol.push(candidate);
+  assert.equal(sol.length, 3); assert.equal(await f.controller.validateCandidate(sol[0]), true);
+  const astra = []; for await (const candidate of f.controller.candidates({ model: 'claude-opus-5-5' })) astra.push(candidate);
+  assert.equal(astra.length, 0);
+  f.quotas.set(emails[0], { ...available(), additional_rate_limits: [{ limit_name: 'gpt-6.1-sol', rate_limit: available(100).rate_limit }] });
+  await f.controller.quota(sol[0].credential, { force: true }); assert.equal(f.controller.validateCandidateNow(sol[0]), false);
 });

@@ -9,6 +9,16 @@ struct AccountsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if !model.showingConnectionForm, let message = model.maintenanceMessage {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(message, systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    if model.maintenanceNeedsAttention {
+                        Button(L10n.text("action.restoreConnection"), action: model.restoreConnection)
+                            .controlSize(.small).disabled(model.applying || model.refreshing || model.preparingService)
+                    }
+                }
+            }
             if model.showingConnectionForm {
                 connectionForm
             } else {
@@ -38,7 +48,7 @@ struct AccountsPanel: View {
                 Text(L10n.text("panel.subtitle")).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if model.refreshing || model.applying {
+            if model.refreshing || model.applying || model.preparingService {
                 ProgressView().controlSize(.small).accessibilityLabel(model.applying ? L10n.text("panel.applying") : L10n.text("panel.refreshing"))
             }
             Button { Task { await model.load(refresh: true) } } label: { Image(systemName: "arrow.clockwise") }
@@ -85,7 +95,9 @@ struct AccountsPanel: View {
             Spacer()
             if model.queryError != nil || model.actionError != nil {
                 errors
-                Button(L10n.text("action.restoreConnection"), action: model.restoreConnection).buttonStyle(.borderedProminent).disabled(model.applying || model.refreshing)
+                if !model.maintenanceNeedsAttention {
+                    Button(L10n.text("action.restoreConnection"), action: model.restoreConnection).buttonStyle(.borderedProminent).disabled(model.applying || model.refreshing || model.preparingService)
+                }
             } else {
                 HStack { Spacer(); ProgressView(L10n.text("panel.loading")); Spacer() }
             }
@@ -109,11 +121,11 @@ struct AccountsPanel: View {
         }
     }
     @ViewBuilder private var errors: some View {
-        if let message = model.queryError {
+        if let message = model.queryError, model.showingConnectionForm || message != model.maintenanceMessage {
             errorView(message)
-            if model.snapshot != nil {
+            if model.snapshot != nil && !model.maintenanceNeedsAttention {
                 Button(L10n.text("action.restoreConnection"), action: model.restoreConnection)
-                    .buttonStyle(.bordered).disabled(model.applying || model.refreshing)
+                    .buttonStyle(.bordered).disabled(model.applying || model.refreshing || model.preparingService)
             }
         }
         if let message = model.actionError {
@@ -131,13 +143,13 @@ struct AccountsPanel: View {
     }
     private func pendingConnection(_ connection: PendingConnection) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(connection.error == nil ? L10n.text("connection.connecting", connection.email) : L10n.text("connection.retryTitle"))
+            Text(connection.title)
                 .font(.caption.weight(.semibold)).lineLimit(2)
-            Text(L10n.text(connection.error == nil ? "connection.description" : "connection.retryDescription"))
+            Text(connection.description)
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                if connection.error != nil {
-                    Button(L10n.text("action.retry")) { model.connectionEmail = connection.email; model.showingConnectionForm = true }
+                if connection.canRetry {
+                    Button(L10n.text("action.retry"), action: model.retryConnection)
                 } else if model.canContinueLogin { Button(L10n.text("action.continueLogin"), action: model.continueLogin) }
                 Spacer()
                 Button(L10n.text("action.cancel"), action: model.cancelConnection)
@@ -155,7 +167,7 @@ struct AccountsPanel: View {
             errors
             Spacer(minLength: 0)
             HStack {
-                Button(L10n.text("action.cancel")) { model.showingConnectionForm = false; model.connectionEmail = "" }
+                Button(L10n.text("action.cancel"), action: model.cancelConnectionForm).disabled(model.applying)
                 Spacer()
                 Button(L10n.text("action.continueBrowser"), action: model.connect).buttonStyle(.borderedProminent)
                     .disabled(model.applying || model.refreshing || model.connectionEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

@@ -8,14 +8,17 @@ import { promisify } from 'node:util';
 import { ensureRuntime, privateJSON, runtimeDirectory } from './runtime.mjs';
 import { models } from './model-catalog.mjs';
 import { applyContextDefaults } from './context-policy.mjs';
+import { renderModelInstructions } from './model-instructions.mjs';
+import { writeModelRule } from './model-rules.mjs';
 import { ensureClientKey, readClientKey } from './client-auth.mjs';
 import { migrateProfile, migrationOptions, resolveMigrationSource } from './migrate-profile.mjs';
 const run = promisify(execFile);
+const setupError = (code, message, cause) => Object.assign(new Error(message), { code, ...(cause ? { cause } : {}) });
 export const serviceLabel = 'com.henrick.claude-codex-bridge';
 const resources = fileURLToPath(new URL('../', import.meta.url));
 const xml = value => String(value).replace(/[<>&"']/g, c => ({ '<':'&lt;', '>':'&gt;', '&':'&amp;', '"':'&quot;', "'":'&apos;' }[c]));
 async function absent(path) {
-  try { await lstat(path); throw new Error('Este nome ou destino já existe. Escolha outro para preservar os dados.'); }
+  try { await lstat(path); throw setupError('setup.destination_exists', 'Este nome ou destino já existe. Escolha outro para preservar os dados.'); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
 async function removeOwnedDirectory(path, identity) {
@@ -115,14 +118,21 @@ export async function availableProfileModels(fetchImpl = fetch) {
   } catch { return []; }
 }
 export async function createIsolated({ name, source, base = join(homedir(), 'Library', 'Application Support', 'Codex Accounts', 'Managed Claudes'), applications = join(homedir(), 'Applications'), migrate_data, source_data_root, source_code_root }) {
-  const migrationSource = await resolveMigrationSource(migrationOptions({ migrate_data, source_data_root, source_code_root }));
-  if (typeof name !== 'string' || !/^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,59}$/u.test(name) || name.includes('..')) throw new Error('Use um nome de até 60 caracteres, sem barras ou caracteres especiais.');
+  if (typeof name !== 'string' || !/^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,59}$/u.test(name) || name.includes('..')) throw setupError('setup.invalid_name', 'Use um nome de até 60 caracteres, sem barras ou caracteres especiais.');
+  if (typeof source !== 'string' || !source.startsWith('/') || /[\r\n\0]/.test(source)) throw setupError('setup.source_invalid', 'Selecione o aplicativo oficial Claude.app.');
   source = resolve(source);
+  const contains = (parent, child) => child === parent || child.startsWith(parent + '/');
+  base = resolve(base); applications = resolve(applications);
+  if (contains(source, base) || contains(source, applications) || contains(base, source) || contains(base, applications) || contains(applications, base)) throw setupError('setup.paths_conflict', 'As pastas de origem e destino precisam ser independentes.');
   const plistPath = join(source, 'Contents', 'Info.plist');
-  const { stdout: identifier } = await run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', plistPath]);
-  if (identifier.trim() !== 'com.anthropic.claudefordesktop') throw new Error('Selecione o aplicativo oficial Claude.app.');
+  let identifier;
+  try { ({ stdout: identifier } = await run('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', plistPath])); }
+  catch (error) { throw setupError('setup.source_invalid', 'Selecione o aplicativo oficial Claude.app.', error); }
+  if (identifier.trim() !== 'com.anthropic.claudefordesktop') throw setupError('setup.source_invalid', 'Selecione o aplicativo oficial Claude.app.');
   const officialRequirement = '=anchor apple generic and certificate leaf[subject.OU] = "Q6L2SF6YDW" and identifier "com.anthropic.claudefordesktop"';
-  await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '-R', officialRequirement, source]);
+  try { await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '-R', officialRequirement, source]); }
+  catch (error) { throw setupError('setup.source_untrusted', 'A assinatura do aplicativo oficial não pôde ser confirmada.', error); }
+  const migrationSource = await resolveMigrationSource(migrationOptions({ migrate_data, source_data_root, source_code_root }));
   const slug = randomUUID();
   const managed = join(base, slug), launcher = join(applications, `${name.trim()}.app`);
   await absent(launcher); await mkdir(base, { recursive: true, mode: 0o700 }); await mkdir(applications, { recursive: true });
@@ -142,7 +152,9 @@ export async function createIsolated({ name, source, base = join(homedir(), 'Lib
     delete codeSettings.ultracode;
     await privateJSON(join(data, 'claude-code', 'settings.json'), applyContextDefaults({ ...codeSettings, enableWorkflows: true }));
     await ensureClientKey(runtimeDirectory());
-    const gatewayProfile = await configureGatewayProfile({ root: `${data}-3p`, name: 'Codex', activate: true, catalog: await availableProfileModels() });
+    const catalog = await availableProfileModels();
+    const modelRule = await writeModelRule(join(data, 'claude-code'), renderModelInstructions(catalog, { persistent: true }));
+    const gatewayProfile = await configureGatewayProfile({ root: `${data}-3p`, name: 'Codex', activate: true, catalog });
     await mkdir(temporary, { mode: 0o700 }); temporaryIdentity = await lstat(temporary);
     await mkdir(join(temporary, 'Contents', 'MacOS'), { recursive: true });
     await mkdir(join(temporary, 'Contents', 'Resources'));
@@ -153,7 +165,7 @@ export async function createIsolated({ name, source, base = join(homedir(), 'Lib
     await writeFile(join(temporary, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.henrick.codex-accounts.claude.${slug}</string><key>CFBundleName</key><string>${xml(name.trim())}</string><key>CFBundleDisplayName</key><string>${xml(name.trim())}</string><key>CFBundleExecutable</key><string>ClaudeLauncher</string><key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/><key>CFBundleIconFile</key><string>Accounts.icns</string><key>LSMinimumSystemVersion</key><string>26.0</string></dict></plist>`);
     await run('/usr/bin/codesign', ['--force', '--sign', '-', '--timestamp=none', temporary]);
     await run('/usr/bin/codesign', ['--verify', '--strict', temporary]);
-    await publishIsolatedInstallation({ managed, temporary, launcher, managedIdentity, temporaryIdentity, metadata: { version: 1, name: name.trim(), launcher, source, userDataDirectory: data, codeConfigDirectory: join(data, 'claude-code'), createdAt: new Date().toISOString() } });
+    await publishIsolatedInstallation({ managed, temporary, launcher, managedIdentity, temporaryIdentity, metadata: { version: 1, name: name.trim(), launcher, source, userDataDirectory: data, codeConfigDirectory: join(data, 'claude-code'), modelRuleStatus: modelRule.reason, createdAt: new Date().toISOString() } });
     return { path: launcher, code: 'setup.isolated_created', ...(migration ? { migration } : {}), message: 'Instalação separada criada. Abra o aplicativo pelo Finder quando quiser começar.' };
   } catch (error) {
     await removeOwnedDirectory(temporary, temporaryIdentity);
@@ -169,8 +181,7 @@ export async function createIsolated({ name, source, base = join(homedir(), 'Lib
     throw error;
   }
 }
-export async function installService({ homeDirectory = homedir(), resourceDirectory = resources, runtimeDir = runtimeDirectory(), runCommand = run, prepareRuntime = ensureRuntime } = {}) {
-  await prepareRuntime(runtimeDir);
+export async function installService({ homeDirectory = homedir(), resourceDirectory = resources, runtimeDir = runtimeDirectory(), runCommand = run, prepareRuntime = ensureRuntime, previousArguments = null } = {}) {
   const directory = join(homeDirectory, 'Library', 'LaunchAgents');
   const path = join(directory, `${serviceLabel}.plist`);
   const arguments_ = [join(resourceDirectory, 'bin', 'BridgeService'), runtimeDir, join(resourceDirectory, 'bin', 'node'), join(resourceDirectory, 'Bridge', 'pool-service.mjs')];
@@ -183,7 +194,8 @@ export async function installService({ homeDirectory = homedir(), resourceDirect
     if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid()) throw ownershipError();
     const { stdout } = await runCommand('/usr/bin/plutil', ['-extract', 'ProgramArguments', 'json', '-o', '-', path]);
     const previous = JSON.parse(stdout);
-    if (!Array.isArray(previous) || previous.length !== arguments_.length || previous.some((value, index) => value !== arguments_[index])) throw ownershipError();
+    const matches = expected => Array.isArray(expected) && previous.length === expected.length && previous.every((value, index) => value === expected[index]);
+    if (!Array.isArray(previous) || !matches(arguments_) && !matches(previousArguments)) throw ownershipError();
     const label = await runCommand('/usr/bin/plutil', ['-extract', 'Label', 'raw', '-o', '-', path]);
     if (label.stdout.trim() !== serviceLabel) throw ownershipError();
   };
@@ -198,6 +210,7 @@ export async function installService({ homeDirectory = homedir(), resourceDirect
   };
   await validatePlist();
   const registered = await registeredJob();
+  await prepareRuntime(runtimeDir);
   await mkdir(directory, { recursive: true });
   const temporary = join(directory, `.${serviceLabel}.${randomUUID()}.tmp`);
   try {
@@ -224,8 +237,13 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     let input = ''; for await (const chunk of process.stdin) { input += chunk; if (input.length > 16384) throw new Error('Configuração muito grande.'); }
     const options = JSON.parse(input);
-    const result = options.action === 'service' ? await installService() : options.action === 'isolated' ? await createIsolated(options) : null;
+    let result;
+    if (options.action === 'service' || options.action === 'service-status') {
+      const lifecycle = await import('./service-lifecycle.mjs');
+      result = await (options.action === 'service' ? lifecycle.prepareService() : lifecycle.serviceStatus());
+    } else if (options.action === 'service-recovery') result = await installService();
+    else if (options.action === 'isolated') result = await createIsolated(options);
     if (!result) throw new Error('Ação desconhecida.');
     console.log(JSON.stringify({ ok: true, ...result }));
-  } catch (error) { console.log(JSON.stringify({ ok: false, code: ['setup.migration_failed', 'setup.migration_source_selection_required'].includes(error.code) ? error.code : 'setup.failed', ...(error.migration ? { migration: error.migration } : {}), message: error.code ? 'Não foi possível concluir a preparação. Confira os caminhos e as permissões do aplicativo.' : error.message })); process.exitCode = 1; }
+  } catch (error) { console.log(JSON.stringify({ ok: false, code: typeof error.code === 'string' && /^setup\.[a-z_]+$/.test(error.code) ? error.code : 'setup.failed', ...(error.migration ? { migration: error.migration } : {}), message: error.code ? 'Não foi possível concluir a preparação. Confira os caminhos e as permissões do aplicativo.' : error.message })); process.exitCode = 1; }
 }

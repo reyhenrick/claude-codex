@@ -1,9 +1,10 @@
-import { resolveModel } from './model-catalog.mjs';
+import { resolveModelVariant } from './model-catalog.mjs';
+import { appendModelInstructions } from './model-instructions.mjs';
 
-export function adaptMessage(value, prefix) {
-  const target = resolveModel(value?.model);
-  if (!target) throw new Error('Este modelo não faz parte do catálogo do Claude Codex.');
-  const result = { ...value, model: `${prefix}/${target}` };
+export function adaptMessage(value, prefix, catalogue = []) {
+  const variant = resolveModelVariant(value?.model);
+  if (!variant) throw new Error('Este modelo não faz parte do catálogo do Claude Codex.');
+  const result = { ...appendModelInstructions(value, catalogue, variant), model: `${prefix}/${variant.target}` };
   const effort = value.output_config?.effort;
   if (effort !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) {
     throw new Error('Nível de esforço inválido.');

@@ -17,7 +17,7 @@ struct UpdateSignatureTests {
         let archiveSignature = try key.signature(for: payload).base64EncodedString()
         let validXML = """
         <?xml version="1.0" encoding="utf-8"?>
-        <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Claude Codex</title><item><sparkle:version>2</sparkle:version><sparkle:shortVersionString>1.0.1</sparkle:shortVersionString><enclosure url="https://github.com/reyhenrick/codex-accounts/releases/download/v1.0.1/ClaudeCodex-macOS.zip" type="application/octet-stream" length="\(payload.count)" sparkle:edSignature="\(archiveSignature)"/></item></channel></rss>
+        <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><title>Claude Codex</title><item><sparkle:version>2</sparkle:version><sparkle:shortVersionString>1.0.0</sparkle:shortVersionString><enclosure url="https://github.com/reyhenrick/claude-codex/releases/download/v1.0.0/ClaudeCodex-macOS.zip" type="application/octet-stream" length="\(payload.count)" sparkle:edSignature="\(archiveSignature)"/></item></channel></rss>
         """
         func signed(_ xml: String) throws -> Data {
             let content = Data((xml + "\n").utf8)
@@ -30,7 +30,7 @@ struct UpdateSignatureTests {
             try archiveBytes.write(to: archive)
             let process = Process()
             process.executableURL = verifier
-            process.arguments = [feed.path, archive.path, trustedKey, "2", "1.0.1"]
+            process.arguments = [feed.path, archive.path, trustedKey, "2", "1.0.0"]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             try process.run()
@@ -46,7 +46,7 @@ struct UpdateSignatureTests {
         try verify("tampered archive same length", bytes: valid, archiveBytes: Data(repeating: 65, count: payload.count))
         try verify("tampered archive length", bytes: valid, archiveBytes: payload + Data([1]))
         try verify("wrong trusted key", bytes: valid, trustedKey: Curve25519.Signing.PrivateKey().publicKey.rawRepresentation.base64EncodedString())
-        try verify("signed wrong download URL", bytes: signed(validXML.replacingOccurrences(of: "reyhenrick/codex-accounts", with: "someone/else")))
+        try verify("signed wrong download URL", bytes: signed(validXML.replacingOccurrences(of: "reyhenrick/claude-codex", with: "someone/else")))
         try verify("signed wrong version", bytes: signed(validXML.replacingOccurrences(of: "<sparkle:version>2", with: "<sparkle:version>3")))
         try verify("signed external release notes", bytes: signed(validXML.replacingOccurrences(of: "</item>", with: "<sparkle:releaseNotesLink>https://example.com</sparkle:releaseNotesLink></item>")))
         try verify("signed delta element", bytes: signed(validXML.replacingOccurrences(of: "</item>", with: "<sparkle:deltas/></item>")))

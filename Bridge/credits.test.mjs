@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { oauthFixture } from './testing/oauth-fixture.mjs';
 import { PoolController, ManagementClient, evaluateQuota } from './pool-controller.mjs';
 import { createPoolRouter as authenticatedRouter } from './pool-router.mjs';
 const ingressKey = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';
@@ -28,8 +29,9 @@ async function fixture({ credits = false, automatic = [] } = {}) {
   quota: async c => { quotaCalls.push(c.email); const value = values.get(c.email); if (value instanceof Error) throw value; return value; },
   resetCooldown: async () => {}, consumeReset: async (c, key) => { consumed.push({ email: c.email, key }); values.set(c.email, usage()); return 'reset'; } };
  const clock = { value: 1900000000000 };
- const controller = new PoolController({ runtimeDir, management, now: () => clock.value });
- return { runtimeDir, accounts, rows, management, values, consumed, quotaCalls, clock, controller };
+ const oauth = oauthFixture(runtimeDir);
+ const controller = new PoolController({ runtimeDir, management, oauthSessions: oauth.manager, now: () => clock.value });
+ return { runtimeDir, accounts, rows, management, values, consumed, quotaCalls, clock, controller, oauth };
 }
 async function candidates(f) { const result = []; for await (const c of f.controller.candidates({ model: 'claude-sonnet-5-5' })) result.push({ email: c.email, source: c.consumption_source }); return result; }
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -184,7 +186,7 @@ test('an inference whose body is incomplete cannot enter upstream after update d
 });
 test('update drain waits for an OAuth start before its pending state is persisted',async t=>{
  const f=await fixture();const started=deferred(),gate=deferred();
- f.management.startLogin=async()=>{started.resolve();await gate.promise;return{state:'synthetic-oauth',url:'https://auth.openai.com/oauth/authorize?state=synthetic-oauth'};};
+ f.oauth.startGate=async()=>{started.resolve();await gate.promise;};
  const base=await server(t,createPoolRouter({controller:f.controller,getClientKey:async()=>'synthetic'}));
  const send=(path,body)=>authorizedFetch(base+path,{method:'POST',headers:{'content-type':'application/json',origin:base,'x-bridge-action':'accounts'},body:JSON.stringify(body)});
  const connecting=send('/_bridge/connect',{email:'third@example.test'});await started.promise;

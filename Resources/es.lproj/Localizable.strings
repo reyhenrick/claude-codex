@@ -178,3 +178,27 @@
 "launcher.connectionRequired" = "Conecta una cuenta primero";
 "launcher.connectAccounts" = "Abre Claude Codex y conecta una cuenta con acceso a un modelo compatible. Después, abre esta instalación de nuevo.";
 "updater.stagedOnQuit" = "Esta actualización ya está descargada y se instalará al salir. La instalación automática sigue desactivada para futuras actualizaciones.";
+
+"quota.codex" = "Codex";
+"quota.additional" = "Límite adicional";
+"quota.namedWindow" = "{0} · {1}";
+"quota.unknownPeriod" = "Período no disponible";
+"quota.seconds" = "{0} segundos";
+"quota.minutes" = "{0} minutos";
+"connection.error.account_mismatch" = "El navegador autorizó otra cuenta. Inténtalo de nuevo y elige el correo indicado aquí.";
+"connection.error.expired" = "La autorización caducó. Inicia la conexión de nuevo.";
+"connection.error.import_failed" = "La autorización se completó, pero no se pudo añadir la cuenta. Intenta conectarla de nuevo.";
+"connection.error.reconnect_busy" = "Esta cuenta tiene una operación en curso. Espera a que termine antes de volver a conectarla.";
+"connection.error.session_unavailable" = "La sesión de autorización ya no está disponible. Cancélala e inicia una nueva conexión.";
+"service.setup.invalid_name" = "Usa un nombre de hasta 60 caracteres que empiece por una letra o un número. Usa solo letras, números, espacios, puntos, guiones bajos o guiones; no uses la secuencia «..».";
+"service.setup.destination_exists" = "Ya existe una aplicación o destino con ese nombre. Elige otro nombre para conservarlo.";
+"service.setup.source_invalid" = "Selecciona el Claude.app oficial instalado. La ruta elegida no contiene una aplicación Claude válida.";
+"service.setup.source_untrusted" = "No se pudo verificar la firma del Claude seleccionado. Instala de nuevo la aplicación oficial y selecciónala.";
+"service.setup.paths_conflict" = "Las carpetas de origen y destino se solapan. Elige carpetas separadas antes de migrar.";
+
+"service.maintenancePending" = "La actualización del servicio de cuentas está pendiente. Espera a que terminen los trabajos y operaciones en curso. Puedes completar o cancelar un inicio de sesión abierto.";
+"service.maintenanceLegacy" = "La conexión aún usa un servicio anterior. Termina los trabajos antes de migrar esta conexión. El nuevo servicio todavía no está activo.";
+
+"setup.previewUnavailable" = "Esta es una vista previa. La creación de instalaciones reales está desactivada.";
+
+"connection.cancelUnconfirmed" = "La autorización anterior sigue pendiente. Complétala o cancélala antes de volver a intentarlo.";

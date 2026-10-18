@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ensureRuntime } from './runtime.mjs';
+import { ensureTestRuntime as ensureRuntime } from './test-support/runtime-helper.mjs';
 import { configureGatewayProfile, createIsolated, profileConfig } from './setup.mjs';
 const clientKey = 'S'.repeat(64);
 const root = fileURLToPath(new URL('../build/setup-fixtures/', import.meta.url));
@@ -59,8 +59,9 @@ test('an ad-hoc bundle cannot impersonate the supplier through its executable pa
  assert.match(display.stderr, /Signature=adhoc/);
  const base = join(dir, 'managed'), applications = join(dir, 'applications');
  await assert.rejects(createIsolated({ name: 'Synthetic Workspace', source, base, applications, migrate_data: false }), error => {
-  assert.ok(Number.isInteger(error.code) && error.code !== 0);
-  assert.match(error.message, /codesign --verify --deep --strict -R/);
+  assert.equal(error.code, 'setup.source_untrusted');
+  assert.ok(Number.isInteger(error.cause.code) && error.cause.code !== 0);
+  assert.match(error.cause.message, /codesign --verify --deep --strict -R/);
   return true;
  });
  await assert.rejects(stat(base), { code: 'ENOENT' });

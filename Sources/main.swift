@@ -18,7 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var startupTask: Task<Void, Never>?
     private var preview: NSWindow?
     private var setupWindow: NSWindow?
-    private let setupModel = SetupModel()
+    private let setupModel = SetupModel(staging: CommandLine.arguments.contains("--staging"))
     private lazy var panel: AccountsPanelWindow = {
         let window = AccountsPanelWindow(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.isFloatingPanel = true; window.level = .statusBar
@@ -54,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updater.showPanel = { [weak self] in self?.showPanel() }
         updater.canPrepare = { [weak self] in
             guard let self else { return false }
-            return !self.model.applying && !self.model.refreshing && !self.setupModel.busy && self.model.confirmation == nil
+            return !self.model.maintenancePending && !self.model.preparingService && !self.model.applying && !self.model.refreshing && !self.setupModel.busy && self.model.confirmation == nil
         }
         model.beforeServicePreparation = { [weak self] in
             guard let self else { return false }
@@ -62,9 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         startupTask = Task { [weak self] in
             guard let self else { return }
-            if CommandLine.arguments.contains("--staging") { model.start(); return }
+            model.start()
+            if CommandLine.arguments.contains("--staging") { return }
             while !Task.isCancelled {
-                if await updater.start() { model.start(); return }
+                if await updater.start() { return }
                 do { try await Task.sleep(for: .seconds(5)) } catch { return }
             }
         }

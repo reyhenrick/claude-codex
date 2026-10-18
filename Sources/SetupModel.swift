@@ -15,6 +15,7 @@ struct SetupResult: Decodable {
     let message: String
     let path: String?
     let migration: MigrationSummary?
+    let service: ServiceReadiness?
     func localizedMessage(fallback: String) -> String { L10n.serviceMessage(code: code, fallback: fallback) }
 }
 
@@ -48,6 +49,12 @@ func runSetup(_ options: [String: Any]) async throws -> SetupResult {
     @Published var busy = false
     @Published var result: SetupResult?
     @Published var error: String?
+    private let setupExecutor: ([String: Any]) async throws -> SetupResult
+    init(staging: Bool = false, setupExecutor suppliedSetup: (([String: Any]) async throws -> SetupResult)? = nil) {
+        if let suppliedSetup { setupExecutor = suppliedSetup }
+        else if staging { setupExecutor = { _ in throw BridgeFailure(message: L10n.text("setup.previewUnavailable")) } }
+        else { setupExecutor = runSetup }
+    }
     var resultMessage: String? {
         guard let result, result.ok else { return nil }
         return result.localizedMessage(fallback: "setup.isolatedCreated")
@@ -76,7 +83,7 @@ func runSetup(_ options: [String: Any]) async throws -> SetupResult {
         if !sourceCodeRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { options["source_code_root"] = sourceCodeRoot }
         Task {
             defer { busy = false }
-            do { accept(try await runSetup(options)) }
+            do { accept(try await setupExecutor(options)) }
             catch { self.error = error.localizedDescription }
         }
     }

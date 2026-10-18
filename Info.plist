@@ -26,9 +26,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.2</string>
+	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>4</string>
+	<string>6</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
@@ -53,7 +53,7 @@
 	<key>SUEnableSystemProfiling</key>
 	<false/>
 	<key>SUFeedURL</key>
-	<string>https://github.com/reyhenrick/codex-accounts/releases/latest/download/appcast.xml</string>
+	<string>https://github.com/reyhenrick/claude-codex/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>HR/E9MW1C0Aqc/qFHif2UC36iVa3C+PFB0hA1U4CZX0=</string>
 	<key>SURequireSignedFeed</key>

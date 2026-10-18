@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, mkdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { models, baseModels, resolveModel, resolveModelVariant, supportedModelIds } from './model-catalog.mjs';
@@ -10,7 +10,8 @@ import { createPoolRouter as authenticatedRouter } from './pool-router.mjs';
 const ingressKey = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';
 const createPoolRouter = options => authenticatedRouter({ ...options, getIngressKey: async () => ingressKey });
 const authorizedFetch = (url, options = {}) => globalThis.fetch(url, { ...options, headers: { authorization: `Bearer ${ingressKey}`, ...options.headers } });
-import { ensureRuntime, makeConfig, upgradeModelConfig } from './runtime.mjs';
+import { makeConfig, upgradeModelConfig, removeTemporaryModelInstructions, temporaryModelInstructionMarker } from './runtime.mjs';
+import { ensureTestRuntime as ensureRuntime, retireTestModelMap } from './test-support/runtime-helper.mjs';
 
 const responseModels = (slugs = baseModels.map(model => model.id), tiers = ['priority']) => ({ models: slugs.map(slug => ({ slug, visibility: 'list', service_tiers: tiers.map(id => ({ id })) })) });
 const allowance = (exhausted = false) => ({ rate_limit: { allowed: !exhausted, limit_reached: exhausted, primary_window: { used_percent: exhausted ? 100 : 0, limit_window_seconds: 604800, reset_at: 2000000000 } }, additional_rate_limits: [], credits: { has_credits: true, unlimited: false, balance: '50' } });
@@ -127,7 +128,7 @@ test('menu rechecks every snapshot after a slower account query completes', asyn
   };
   const pending = f.controller.availableModels();
   await started.promise;
-  f.rows[0].updated_at = 'v2'; await f.controller.credentials(true);
+  f.rows[0].id_token.plan_type = 'changed-plan'; await f.controller.credentials(true);
   gate.resolve(responseModels([]));
   assert.deepEqual(await pending, []);
 });
@@ -166,11 +167,12 @@ test('subscription exhaustion observed during credential validation blocks dispa
   assert.equal(await f.controller.validateCandidate(counted), true);
 });
 
-test('timestamp, auth identity, generation and credential removal invalidate cached capabilities', async t => {
-  for (const field of ['updated_at', 'auth_index', 'account_id', 'disabled', 'removed']) {
+test('plan, auth identity, generation and credential removal invalidate cached capabilities', async t => {
+  for (const field of ['plan', 'auth_index', 'account_id', 'disabled', 'removed']) {
     const f = await fixture(t);
     const candidate = (await collect(f.controller, 'claude-sonnet-5-5'))[0];
-    if (field === 'account_id') f.rows[0].id_token.chatgpt_account_id = 'changed';
+    if (field === 'plan') f.rows[0].id_token.plan_type = 'changed';
+    else if (field === 'account_id') f.rows[0].id_token.chatgpt_account_id = 'changed';
     else if (field === 'removed') f.rows.shift();
     else f.rows[0][field] = field === 'disabled' ? true : 'changed';
     assert.equal(await f.controller.validateCandidate(candidate), false);
@@ -214,7 +216,7 @@ test('late model response cannot repopulate capability cache after reconnection 
     f.management.models = async () => gate.promise;
     const pending = f.controller.capabilities(credential);
     if (disconnected) await f.controller.disconnect(credential.email);
-    else { f.rows[0].updated_at = 'v2'; await f.controller.credentials(true); }
+    else { f.rows[0].id_token.plan_type = 'changed-plan'; await f.controller.credentials(true); }
     gate.resolve(responseModels(undefined, ['priority', 'ultrafast']));
     const stale = await pending;
     assert.equal(f.controller.capabilityCurrent(stale, credential), false);
@@ -304,6 +306,47 @@ test('expired capability proof at final dispatch check cannot reach the backend'
   assert.equal(dispatched, 0);
 });
 
+test('model instructions do not make a healthy first account wait for a slow secondary capability lookup', { timeout: 10000 }, async t => {
+  const f = await fixture(t), slow = deferred(); let secondaryFinished = false;
+  const lookup = f.management.models;
+  f.management.models = async credential => {
+    if (credential.email === f.accounts[1].email) { await slow.promise; secondaryFinished = true; }
+    return lookup(credential);
+  };
+  t.after(() => slow.resolve());
+  const received = [];
+  const backend = await server(t, http.createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    received.push(JSON.parse(Buffer.concat(chunks))); res.end('{}');
+  }));
+  const base = await server(t, createPoolRouter({ controller: f.controller, getClientKey: async () => 'synthetic', backendPort: Number(new URL(backend).port) }));
+  const response = await authorizedFetch(base + '/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'claude-opus-5-5', messages: [] }), signal: AbortSignal.timeout(2000) });
+  assert.equal(response.status, 200); await response.text();
+  assert.equal(secondaryFinished, false);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].model, 'conta-01/gpt-6-astra');
+  assert.match(received[0].system.at(-1).text, /This request is routed to GPT-6 Astra;/);
+  slow.resolve(); await f.controller.instructionRefresh;
+});
+
+test('instruction catalogue excludes expired, disabled and no-longer-selected capability snapshots', async t => {
+  const f = await fixture(t);
+  f.values.set(f.accounts[0].email, responseModels(['gpt-6-astra']));
+  f.values.set(f.accounts[1].email, responseModels(['gpt-6-luna']));
+  await f.controller.availableModels();
+  const first = (await collect(f.controller, 'claude-opus-5-5'))[0];
+  assert.equal(await f.controller.validateCandidate(first), true);
+  assert.ok(f.controller.instructionModels(first).some(row => row.baseModel === 'gpt-6-luna'));
+  await f.controller.instructionRefresh;
+  await f.controller.update({ revision: 0, mode: 'fixed', fixed_email: f.accounts[0].email });
+  const fixed = (await collect(f.controller, 'claude-opus-5-5'))[0];
+  assert.equal(await f.controller.validateCandidate(fixed), true);
+  assert.ok(f.controller.instructionModels(fixed).every(row => row.baseModel === 'gpt-6-astra'));
+  assert.deepEqual(f.controller.instructionModels(first), []);
+  f.clock.value += capabilityTTL;
+  assert.deepEqual(f.controller.instructionModels(fixed), []);
+});
+
 test('runtime upgrades only owned aliases and tier overrides while preserving credentials and unrelated configuration', async t => {
   const f = await fixture(t);
   const original = makeConfig(f.runtimeDir, 'synthetic-hash', 'synthetic-key');
@@ -314,8 +357,10 @@ test('runtime upgrades only owned aliases and tier overrides while preserving cr
     { models: [{ name: '*', protocol: 'other' }], params: { service_tier: 'custom' } },
   ] };
   original.custom = { untouched: true };
-  await writeFile(join(f.runtimeDir, 'management.key'), 'synthetic-management-key');
-  await writeFile(join(f.runtimeDir, 'config.yaml'), JSON.stringify(original));
+  await mkdir(join(f.runtimeDir, 'auth'), { mode: 0o700 });
+  await chmod(join(f.runtimeDir, 'accounts-state.json'), 0o600);
+  await writeFile(join(f.runtimeDir, 'management.key'), 'synthetic-management-key', { mode: 0o600 });
+  await writeFile(join(f.runtimeDir, 'config.yaml'), JSON.stringify(original), { mode: 0o600 });
   const stateBefore = await readFile(join(f.runtimeDir, 'accounts-state.json'), 'utf8');
   const upgraded = await ensureRuntime(f.runtimeDir);
   assert.deepEqual(upgraded.custom, original.custom);
@@ -335,4 +380,62 @@ test('runtime upgrades only owned aliases and tier overrides while preserving cr
   assert.deepEqual(await ensureRuntime(f.runtimeDir), upgraded);
   assert.equal(await readFile(join(f.runtimeDir, 'management.key'), 'utf8'), 'synthetic-management-key');
   assert.equal(await readFile(join(f.runtimeDir, 'accounts-state.json'), 'utf8'), stateBefore);
+});
+
+test('explicit transition cleanup removes only the temporary legacy model map; generic preparation preserves it', async t => {
+  const text = temporaryModelInstructionMarker + '<claude_codex_model_mapping>\nSynthetic managed mapping.\n</claude_codex_model_mapping>\n';
+  const owned = { models: [{ name: '*gpt-6-astra', protocol: 'codex', 'from-protocol': 'claude' }], params: { instructions: text }, codex_accounts_model_instructions: 1 };
+  const foreign = { models: [{ name: '*', protocol: 'codex' }], params: { instructions: 'Preserve my instructions.' } };
+  const native = { ...owned, models: [{ name: '*gpt-6-astra', protocol: 'codex', 'from-protocol': 'responses' }] };
+  const malformed = { ...owned, params: { instructions: temporaryModelInstructionMarker + 'User-edited incomplete content.' } };
+  const mixed = { ...owned, params: { instructions: text, temperature: 0.2 } };
+  const config = { privateFixture: 'preserve synthetic configuration', requests: { payload: { override: [owned, foreign, native, malformed, mixed] } } };
+  const before = structuredClone(config);
+  const cleaned = removeTemporaryModelInstructions(config);
+  assert.deepEqual(config, before);
+  assert.deepEqual(cleaned.requests.payload.override, [foreign, native, malformed, { models: owned.models, params: { temperature: 0.2 } }]);
+  assert.equal(cleaned.privateFixture, config.privateFixture);
+  assert.deepEqual(removeTemporaryModelInstructions(cleaned), cleaned);
+  const upgraded = upgradeModelConfig(config);
+  assert.deepEqual(upgraded.requests.payload.override.slice(0, 5), config.requests.payload.override);
+  const f = await fixture(t);
+  const runtime = makeConfig(f.runtimeDir, 'synthetic-hash', 'synthetic-key');
+  runtime.requests.payload.override.push(owned);
+  await mkdir(join(f.runtimeDir, 'auth'), { mode: 0o700 });
+  await chmod(join(f.runtimeDir, 'accounts-state.json'), 0o600);
+  await writeFile(join(f.runtimeDir, 'management.key'), 'synthetic-management-key', { mode: 0o600 });
+  await writeFile(join(f.runtimeDir, 'config.yaml'), JSON.stringify(runtime), { mode: 0o600 });
+  const prepared = await ensureRuntime(f.runtimeDir);
+  assert.ok(prepared.requests.payload.override.some(rule => rule.params?.instructions === text));
+  const activated = await retireTestModelMap(f.runtimeDir);
+  assert.ok(!activated.requests.payload.override.some(rule => rule.params?.instructions === text));
+  assert.deepEqual(activated.access, runtime.access);
+  assert.deepEqual(activated.management, runtime.management);
+});
+
+test('an inference timestamp update does not revoke a candidate or refetch unchanged model capabilities', async t => {
+  const f = await fixture(t);
+  let calls = 0; const original = f.management.models;
+  f.management.models = async credential => { calls++; return original(credential); };
+  const candidate = (await collect(f.controller, 'claude-sonnet-5-5'))[0];
+  const before = calls;
+  for (let i = 0; i < 25; i++) {
+    f.rows[0].updated_at = `inference-${i}`;
+    assert.equal(await f.controller.validateCandidate(candidate), true);
+    assert.equal(f.controller.validateCandidateNow(candidate), true);
+    await f.controller.capabilities(candidate.credential);
+  }
+  assert.equal(calls, before);
+});
+
+test('a changed or duplicated routing prefix cannot bind an inference to an unverified credential', async t => {
+  for (const duplicate of [false, true]) {
+    const f = await fixture(t);
+    const candidate = (await collect(f.controller, 'claude-sonnet-5-5'))[0];
+    if (duplicate) f.rows.push({ ...f.rows[0], name: 'unmanaged.json', auth_index: 'unmanaged', email: 'unmanaged@example.test' });
+    else f.rows[0].prefix = 'different-prefix';
+    assert.equal(await f.controller.validateCandidate(candidate), false);
+    assert.equal(f.controller.validateCandidateNow(candidate), false);
+    assert.ok(!(await collect(f.controller, 'claude-sonnet-5-5')).some(row => row.email === candidate.email));
+  }
 });

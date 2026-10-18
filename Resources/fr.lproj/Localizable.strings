@@ -178,3 +178,27 @@
 "launcher.connectionRequired" = "Connectez d’abord un compte";
 "launcher.connectAccounts" = "Ouvrez Claude Codex et connectez un compte ayant accès à un modèle compatible. Ouvrez ensuite cette installation à nouveau.";
 "updater.stagedOnQuit" = "Cette mise à jour est déjà téléchargée et sera installée à la fermeture. L’installation automatique reste désactivée pour les prochaines mises à jour.";
+
+"quota.codex" = "Codex";
+"quota.additional" = "Limite supplémentaire";
+"quota.namedWindow" = "{0} · {1}";
+"quota.unknownPeriod" = "Période indisponible";
+"quota.seconds" = "{0} secondes";
+"quota.minutes" = "{0} minutes";
+"connection.error.account_mismatch" = "Le navigateur a autorisé un autre compte. Réessayez et choisissez l’adresse e-mail saisie ici.";
+"connection.error.expired" = "L’autorisation a expiré. Recommencez la connexion.";
+"connection.error.import_failed" = "L’autorisation a abouti, mais le compte n’a pas pu être ajouté. Essayez de le reconnecter.";
+"connection.error.reconnect_busy" = "Une opération est en cours sur ce compte. Attendez sa fin avant de le reconnecter.";
+"connection.error.session_unavailable" = "La session d’autorisation n’est plus disponible. Annulez-la et commencez une nouvelle connexion.";
+"service.setup.invalid_name" = "Utilisez un nom de 60 caractères maximum commençant par une lettre ou un chiffre. Seuls les lettres, chiffres, espaces, points, traits de soulignement et traits d’union sont autorisés ; évitez deux points consécutifs.";
+"service.setup.destination_exists" = "Une application ou une destination porte déjà ce nom. Choisissez un autre nom pour la préserver.";
+"service.setup.source_invalid" = "Sélectionnez le Claude.app officiel installé. Le chemin choisi ne contient pas d’application Claude valide.";
+"service.setup.source_untrusted" = "La signature du Claude sélectionné n’a pas pu être vérifiée. Réinstallez l’application officielle et sélectionnez-la.";
+"service.setup.paths_conflict" = "Les dossiers source et destination se chevauchent. Choisissez des dossiers distincts avant la migration.";
+
+"service.maintenancePending" = "La mise à jour du service de comptes est en attente. Attendez la fin des travaux et opérations en cours. Vous pouvez terminer ou annuler une connexion ouverte.";
+"service.maintenanceLegacy" = "La connexion utilise encore un ancien service. Terminez les travaux avant de migrer cette connexion. Le nouveau service n’est pas encore actif.";
+
+"setup.previewUnavailable" = "Ceci est un aperçu. La création d’installations réelles est désactivée.";
+
+"connection.cancelUnconfirmed" = "L’autorisation précédente est toujours en attente. Terminez-la ou annulez-la avant de réessayer.";

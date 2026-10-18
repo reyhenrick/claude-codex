@@ -178,3 +178,27 @@
 "launcher.connectionRequired" = "Collega prima un account";
 "launcher.connectAccounts" = "Apri Claude Codex e collega un account con accesso a un modello supportato. Poi riapri questa installazione.";
 "updater.stagedOnQuit" = "Questo aggiornamento è già stato scaricato e verrà installato all’uscita. L’installazione automatica resta disattivata per gli aggiornamenti futuri.";
+
+"quota.codex" = "Codex";
+"quota.additional" = "Limite aggiuntivo";
+"quota.namedWindow" = "{0} · {1}";
+"quota.unknownPeriod" = "Periodo non disponibile";
+"quota.seconds" = "{0} secondi";
+"quota.minutes" = "{0} minuti";
+"connection.error.account_mismatch" = "Il browser ha autorizzato un altro account. Riprova e scegli l’indirizzo e-mail inserito qui.";
+"connection.error.expired" = "L’autorizzazione è scaduta. Avvia di nuovo la connessione.";
+"connection.error.import_failed" = "L’autorizzazione è stata completata, ma non è stato possibile aggiungere l’account. Prova a collegarlo di nuovo.";
+"connection.error.reconnect_busy" = "È in corso un’operazione su questo account. Attendi che termini prima di ricollegarlo.";
+"connection.error.session_unavailable" = "La sessione di autorizzazione non è più disponibile. Annullala e avvia una nuova connessione.";
+"service.setup.invalid_name" = "Usa un nome di massimo 60 caratteri che inizi con una lettera o un numero. Sono consentiti solo lettere, numeri, spazi, punti, trattini bassi e trattini; non usare la sequenza «..».";
+"service.setup.destination_exists" = "Esiste già un’applicazione o una destinazione con questo nome. Scegli un altro nome per conservarla.";
+"service.setup.source_invalid" = "Seleziona il Claude.app ufficiale installato. Il percorso scelto non contiene un’applicazione Claude valida.";
+"service.setup.source_untrusted" = "Non è stato possibile verificare la firma del Claude selezionato. Reinstalla l’applicazione ufficiale e selezionala.";
+"service.setup.paths_conflict" = "Le cartelle di origine e destinazione si sovrappongono. Scegli cartelle separate prima della migrazione.";
+
+"service.maintenancePending" = "L’aggiornamento del servizio account è in attesa. Attendi la fine dei lavori e delle operazioni in corso. Puoi completare o annullare un accesso aperto.";
+"service.maintenanceLegacy" = "La connessione usa ancora un servizio precedente. Termina i lavori prima di migrare questa connessione. Il nuovo servizio non è ancora attivo.";
+
+"setup.previewUnavailable" = "Questa è un’anteprima. La creazione di installazioni reali è disattivata.";
+
+"connection.cancelUnconfirmed" = "L’autorizzazione precedente è ancora in sospeso. Completala o annullala prima di riprovare.";

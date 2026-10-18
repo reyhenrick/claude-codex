@@ -1,10 +1,15 @@
-import { readFile, writeFile, rename, chmod, open, unlink } from 'node:fs/promises';
+import { readFile, rename, open, unlink } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { evaluateQuota, unknownQuota, creditPermission } from './quota-state.mjs';
+import { evaluateQuota, unknownQuota, creditPermission, quotaForModel } from './quota-state.mjs';
+import { credentialPrefix } from './credential-files.mjs';
+import { OAuthSessionManager } from './oauth-session.mjs';
+import { AccountConnections, connectionURL } from './account-connections.mjs';
 import { models, resolveModelVariant, supportedModelIds } from './model-catalog.mjs';
 export { evaluateQuota } from './quota-state.mjs';
 export const capabilityTTL = 60000;
+const canonicalEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : value;
+
 
 export class BridgeError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -18,13 +23,17 @@ export class ManagementClient {
     const key = await readFile(join(this.runtimeDir, 'management.key'), 'utf8');
     const response = await this.fetch(`${this.baseURL}/v8/management/${path}`, {
       method, headers: { authorization: `Bearer ${key.trim()}`, 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : Buffer.isBuffer(body) ? body : JSON.stringify(body),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000),
     });
     if (!response.ok) { await response.body?.cancel(); throw new BridgeError(503, 'O gerenciador local não respondeu.'); }
     return response.json();
   }
-  async credentials() { return (await this.call('credentials')).files; }
+  async credentials() {
+    const files = (await this.call('credentials')).files;
+    if (!Array.isArray(files)) return files;
+    return Promise.all(files.map(async file => file.provider !== 'codex' ? file : { ...file, prefix: await credentialPrefix(this.runtimeDir, file) }));
+  }
   async models(credential) {
     const request = {
       auth_index: credential.auth_index, method: 'GET', url: 'https://chatgpt.com/backend-api/codex/models?client_version=0.162.0-alpha.17.2',
@@ -58,7 +67,7 @@ export class ManagementClient {
   }
   async quota(credential) {
     const usage = await this.accountCall(credential, 'usage');
-    if (usage.email !== credential.email || (usage.account_id && usage.account_id !== credential.account_id)) {
+    if (canonicalEmail(usage.email) !== canonicalEmail(credential.email) || (usage.account_id && usage.account_id !== credential.account_id)) {
       throw new BridgeError(503, 'A consulta de limite retornou uma conta diferente.');
     }
     return usage;
@@ -72,12 +81,15 @@ export class ManagementClient {
   async startLogin() { return this.call('oauth/auth-url?provider=codex&is_webui=true'); }
   async loginStatus(state) { return this.call(`oauth/status?state=${encodeURIComponent(state)}`); }
   async cancelLogin(state) { return this.call(`oauth/session?state=${encodeURIComponent(state)}`, 'DELETE'); }
+  async importCredential(name, content) { await this.call(`credentials?name=${encodeURIComponent(name)}`, 'POST', content); }
+  async setCredentialDisabled(name, disabled) { await this.call('credentials/status', 'PATCH', { name, disabled }); }
   async patchCredential(name, fields) { await this.call('credentials/fields', 'PATCH', { name, ...fields }); }
   async deleteCredential(name) { await this.call(`credentials?name=${encodeURIComponent(name)}`, 'DELETE'); }
 }
 
 export class PoolController {
-  constructor({ runtimeDir, management = new ManagementClient({ runtimeDir }), now = Date.now }) {
+  constructor({ runtimeDir, management = new ManagementClient({ runtimeDir }), now = Date.now, oauthSessions = new OAuthSessionManager({ runtimeDir }) }) {
+    this.connections = new AccountConnections(this, oauthSessions);
     this.runtimeDir = runtimeDir; this.management = management; this.now = now;
     this.quotas = new Map(); this.inflight = new Map(); this.transientBlocks = new Map();
     this.lastUsed = null; this.writeQueue = Promise.resolve(); this.credentialCache = null;
@@ -88,7 +100,19 @@ export class PoolController {
     this.credentialReadSequence = 0; this.credentialPending = null;
   }
   async readState() {
-    const state = JSON.parse(await readFile(join(this.runtimeDir, 'accounts-state.json'), 'utf8'));
+    const stored = JSON.parse(await readFile(join(this.runtimeDir, 'accounts-state.json'), 'utf8'));
+    // Older installations persisted the provider's mixed-case email. Use one
+    // key for routing, in-flight work, reset journals and OAuth reconciliation.
+    const journal = Object.entries(stored.reset_journal ?? {});
+    if (new Set(journal.map(([email]) => canonicalEmail(email))).size !== journal.length) throw new BridgeError(503, 'A lista de contas precisa ser revisada.');
+    const state = { ...stored,
+      accounts: Array.isArray(stored.accounts) ? stored.accounts.map(row => ({ ...row, email: canonicalEmail(row.email) })) : stored.accounts,
+      priority_order: Array.isArray(stored.priority_order) ? stored.priority_order.map(canonicalEmail) : stored.priority_order,
+      fixed_email: canonicalEmail(stored.fixed_email),
+      auto_reset_emails: Array.isArray(stored.auto_reset_emails) ? stored.auto_reset_emails.map(canonicalEmail) : stored.auto_reset_emails,
+      reset_journal: Object.fromEntries(journal.map(([email, operation]) => [canonicalEmail(email), operation])),
+      pending_oauth: stored.pending_oauth ? { ...stored.pending_oauth, email: canonicalEmail(stored.pending_oauth.email) } : null,
+    };
     const emails = state.accounts?.map(a => a.email);
     if (!Array.isArray(emails) || new Set(emails).size !== emails.length ||
         !Array.isArray(state.priority_order) || state.priority_order.length !== emails.length ||
@@ -111,8 +135,11 @@ export class PoolController {
   }
   rememberState(state) {
     if (state.revision < this.rememberedRevision) return;
+    this.reconnecting = state.pending_oauth?.phase === 'importing' ? state.pending_oauth.email : null;
     this.rememberedRevision = state.revision; this.rememberedCredits = state.allow_extra_credits ?? false;
     this.rememberedSelection = this.selectionIdentity(state);
+    const selected = state.mode === 'fixed' ? [state.fixed_email] : state.priority_order;
+    this.instructionAccounts = state.accounts.filter(account => selected.includes(account.email));
     this.resetBarriers = new Map(Object.entries(state.reset_journal ?? {}).map(([email, op]) => [email,
       ['pending', 'uncertain'].includes(op.status) ? `pending:${op.key}` : op.key]));
   }
@@ -132,7 +159,7 @@ export class PoolController {
       }
       if (!Array.isArray(files)) throw new BridgeError(503, 'O gerenciador não retornou a lista de contas.');
       const rows = files.filter(f => f.provider === 'codex').map(f => ({
-        name: f.name, email: f.email, auth_index: f.auth_index, disabled: Boolean(f.disabled),
+        name: f.name, email: canonicalEmail(f.email), prefix: f.prefix, auth_index: f.auth_index, disabled: Boolean(f.disabled),
         unavailable: Boolean(f.unavailable), next_retry_after: f.next_retry_after,
         account_id: f.id_token?.chatgpt_account_id, plan: f.id_token?.plan_type,
         updated_at: f.updated_at ?? f.modtime,
@@ -140,13 +167,20 @@ export class PoolController {
       const identities = new Map(rows.map(credential => [credential.name, this.capabilityIdentity(credential)]));
       for (const [name, identity] of this.capabilityIdentities) if (identities.get(name) !== identity) this.invalidateCapabilities(name);
       this.capabilityIdentities = identities;
+      this.latestCredentialRows = rows;
       this.credentialCache = { at: this.now(), rows, sequence }; return rows;
     })();
     this.credentialPending = pending;
     try { return await pending; } finally { if (this.credentialPending === pending) this.credentialPending = null; }
   }
+  credentialForAccount(rows, account) {
+    if (!account) return undefined;
+    const credential = rows.find(row => row.email === account.email && row.name === account.name && row.prefix === account.prefix);
+    if (!credential || (!credential.disabled && rows.filter(row => row.prefix === account.prefix && !row.disabled).length !== 1)) return undefined;
+    return credential;
+  }
   capabilityIdentity(credential) {
-    return createHash('sha256').update(JSON.stringify([credential.name, credential.email, credential.account_id, credential.auth_index, credential.updated_at, credential.disabled])).digest('hex');
+    return createHash('sha256').update(JSON.stringify([credential.name, credential.email, credential.account_id, credential.auth_index, credential.plan, credential.prefix, credential.disabled])).digest('hex');
   }
   invalidateCapabilities(name) {
     this.capabilityEpochs.set(name, (this.capabilityEpochs.get(name) ?? 0) + 1);
@@ -184,7 +218,7 @@ export class PoolController {
     const order = state.mode === 'fixed' ? [state.fixed_email] : state.priority_order;
     const snapshots = await Promise.all(order.map(async email => {
       const account = state.accounts.find(account => account.email === email);
-      const credential = credentials.find(credential => credential.email === email && credential.name === account.name);
+      const credential = this.credentialForAccount(credentials, account);
       if (!credential || credential.disabled) return null;
       const snapshot = await this.capabilities(credential, { force });
       return { snapshot, credential };
@@ -192,6 +226,23 @@ export class PoolController {
     const current = await this.readState();
     if (current.revision !== state.revision) return [];
     const supported = new Set(snapshots.flatMap(row => row && this.capabilityCurrent(row.snapshot, row.credential) ? row.snapshot.ids : []));
+    return models.filter(model => supported.has(model.id));
+  }
+  instructionModels(candidate) {
+    // Do not make inference wait on capabilities of unrelated accounts. The
+    // service/menu refreshes the full catalogue; a validated candidate fills
+    // its own cache before this synchronous snapshot is taken.
+    if (!this.validateCandidateNow(candidate)) return [];
+    if (!this.instructionRefresh && (this.instructionRefreshAt === undefined || this.now() - this.instructionRefreshAt >= capabilityTTL)) {
+      this.instructionRefreshAt = this.now();
+      this.instructionRefresh = this.availableModels().catch(() => []).finally(() => { this.instructionRefresh = null; });
+    }
+    const supported = new Set();
+    for (const credential of this.credentialCache?.rows ?? []) {
+      if (credential.disabled || !this.instructionAccounts?.some(account => account.email === credential.email && account.name === credential.name)) continue;
+      const snapshot = this.capabilityCache.get(credential.name);
+      if (this.capabilityCurrent(snapshot, credential)) for (const id of snapshot.ids) supported.add(id);
+    }
     return models.filter(model => supported.has(model.id));
   }
   invalidateQuota(credential) {
@@ -225,7 +276,7 @@ export class PoolController {
     try { return await pending; } finally { if (this.inflight.get(credential.name) === pending) this.inflight.delete(credential.name); }
   }
   operational(credential) {
-    return credential && !credential.disabled && (this.transientBlocks.get(credential.email) ?? 0) <= this.now() &&
+    return credential && this.reconnecting !== credential.email && !credential.disabled && (this.transientBlocks.get(credential.email) ?? 0) <= this.now() &&
       !(credential.unavailable && Date.parse(credential.next_retry_after) > this.now());
   }
   async *candidates({ model, countOnly = false, signal } = {}) {
@@ -237,7 +288,7 @@ export class PoolController {
     const observed = new Map(); const offered = new Set();
     const lookup = async email => {
       const account = state.accounts.find(a => a.email === email);
-      const credential = credentials.find(c => c.name === account.name && c.email === email);
+      const credential = this.credentialForAccount(credentials, account);
       const capability = credential ? await this.capabilities(credential) : null;
       let quota = credential ? await this.quota(credential) : unknownQuota('disconnected');
       signal?.throwIfAborted();
@@ -253,13 +304,13 @@ export class PoolController {
     for (const email of order) {
       signal?.throwIfAborted();
       if (countOnly) {
-        const account = state.accounts.find(a => a.email === email), credential = credentials.find(c => c.name === account.name && c.email === email);
+        const account = state.accounts.find(a => a.email === email), credential = this.credentialForAccount(credentials, account);
         const row = { account, credential, capability: credential ? await this.capabilities(credential) : null };
         if (capable(row)) yield selection(row);
         continue;
       }
       const row = await lookup(email);
-      if (capable(row) && row.quota.eligible && this.operational(row.credential)) {
+      if (capable(row) && quotaForModel(row.quota, variant.baseModel).eligible && this.operational(row.credential)) {
         offered.add(email); yield { ...selection(row), consumption_source: 'subscription' };
       }
     }
@@ -269,7 +320,7 @@ export class PoolController {
     for (const row of observed.values()) row.quota = this.quotas.get(row.account.email) ?? unknownQuota();
     for (const email of order) {
       const row = observed.get(email);
-      if (!offered.has(email) && capable(row) && row.quota.eligible && this.operational(row.credential) && this.quotaMetadata.get(row.quota)?.identity === this.identity(row.credential)) {
+      if (!offered.has(email) && capable(row) && quotaForModel(row.quota, variant.baseModel).eligible && this.operational(row.credential) && this.quotaMetadata.get(row.quota)?.identity === this.identity(row.credential)) {
         offered.add(email); yield { ...selection(row), consumption_source: 'subscription' };
       }
     }
@@ -280,7 +331,7 @@ export class PoolController {
     for (const email of order) {
       signal?.throwIfAborted();
       const row = observed.get(email);
-      if (!capable(row) || !row.quota.credits.eligible || !row.quota.additional_allowed || !row.credential || row.credential.disabled || (this.transientBlocks.get(email) ?? 0) > this.now()) continue;
+      if (!capable(row) || !row.quota.credits.eligible || !quotaForModel(row.quota, variant.baseModel).additional_allowed || !row.credential || row.credential.disabled || (this.transientBlocks.get(email) ?? 0) > this.now()) continue;
       if (row.credential.unavailable) {
         await this.management.resetCooldown(row.credential); row.credential.unavailable = false; this.credentialCache = null;
       }
@@ -302,12 +353,12 @@ export class PoolController {
     return this.validateCandidateNow(account);
   }
   validateCandidateNow(account) {
-    if (account.selection_identity !== this.rememberedSelection || !this.capabilityCurrent(account.capability, account.credential) ||
+    if (!this.credentialForAccount(this.latestCredentialRows ?? [], account) || account.selection_identity !== this.rememberedSelection || !this.capabilityCurrent(account.capability, account.credential) ||
       !account.capability.ids.includes(account.requested_model)) return false;
     if (account.count_only) return true;
     if (account.consumption_source === 'subscription') {
       const quota = this.quotas.get(account.email), meta = quota && this.quotaMetadata.get(quota);
-      return Boolean(quota?.eligible && meta && meta.identity === this.identity(account.credential) &&
+      return Boolean(quotaForModel(quota, resolveModelVariant(account.requested_model)?.baseModel).eligible && meta && meta.identity === this.identity(account.credential) &&
         meta.epoch === (this.quotaEpochs.get(account.credential.name) ?? 0) && this.operational(account.credential));
     }
     if (account.consumption_source !== 'credits') return false;
@@ -321,11 +372,11 @@ export class PoolController {
       rows.push({ connected: true, disabled: proof.credential.disabled, quota });
     }
     const selected = this.quotas.get(account.email);
-    return Boolean(selected?.credits.eligible && selected.additional_allowed && this.operational(account.credential) && creditPermission({ allow_extra_credits: true }, rows).allowed);
+    return Boolean(selected?.credits.eligible && quotaForModel(selected, resolveModelVariant(account.requested_model)?.baseModel).additional_allowed && this.operational(account.credential) && creditPermission({ allow_extra_credits: true }, rows).allowed);
   }
   markUsed(account) { this.lastUsed = { email: account.email, at: new Date(this.now()).toISOString(), consumption_source: account.consumption_source ?? 'subscription' }; }
   acquire(account) {
-    if (this.disconnecting.has(account.email) || this.removedAccounts.has(account.email)) return null;
+    if (this.reconnecting === account.email || this.disconnecting.has(account.email) || this.removedAccounts.has(account.email)) return null;
     this.activeAccounts.set(account.email, (this.activeAccounts.get(account.email) ?? 0) + 1);
     let released = false;
     return () => { if (!released) { released = true; this.activeAccounts.set(account.email, Math.max(0, (this.activeAccounts.get(account.email) ?? 1) - 1)); } };
@@ -384,69 +435,15 @@ export class PoolController {
       return this.saveState(next);
     });
   }
-  connect(email) {
-    return this.mutate(async () => {
-      if (typeof email === 'string') email = email.trim().toLowerCase();
-      if (typeof email !== 'string' || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BridgeError(400, 'Informe o e-mail da conta.');
-      const state = await this.readState();
-      if (state.pending_oauth && !state.pending_oauth.error) throw new BridgeError(409, 'Conclua ou cancele a conexão que já está em andamento.');
-      const reset = state.reset_journal[email];
-      if (this.resetInFlight.has(email) || (reset && ['pending', 'uncertain'].includes(reset.status))) throw new BridgeError(409, 'Confirme o reset pendente antes de reconectar esta conta.');
-      const before = await this.credentials(true);
-      const login = await this.management.startLogin();
-      const url = new URL(login.url);
-      if (url.origin !== 'https://auth.openai.com' || url.pathname !== '/oauth/authorize' || typeof login.state !== 'string') throw new BridgeError(503, 'O endereço de autorização não é válido.');
-      await this.saveState({ ...state, pending_oauth: { email, state: login.state, started_at: new Date(this.now()).toISOString(),
-        previous_names: before.map(c => c.name), previous_versions: Object.fromEntries(before.map(c => [c.name, c.updated_at ?? null])) }, revision: state.revision + 1 });
-      return { auth_url: login.url, email };
-    });
-  }
-  cancelConnection() {
-    return this.mutate(async () => {
-      const state = await this.readState();
-      if (state.pending_oauth) await this.management.cancelLogin(state.pending_oauth.state);
-      await this.saveState({ ...state, pending_oauth: null, revision: state.revision + 1 });
-    });
-  }
+  connect(email) { return this.mutate(() => this.connections.connect(email)); }
+  cancelConnection() { return this.mutate(() => this.connections.cancel()); }
   async pollConnection() {
-    const initial = await this.readState();
-    if (!initial.pending_oauth || initial.pending_oauth.error) return;
-    return this.mutate(async () => {
-      const state = await this.readState(); const pending = state.pending_oauth;
-      if (!pending || pending.error) return;
-      let status;
-      try { status = await this.management.loginStatus(pending.state); } catch { return; }
-      if (status.status === 'wait') return;
-      const credentials = await this.credentials(true);
-      const matches = credentials.filter(c => c.email?.toLowerCase() === pending.email);
-      const changed = credentials.filter(credential => !pending.previous_names.includes(credential.name) ||
-        (credential.updated_at && credential.updated_at !== pending.previous_versions?.[credential.name]));
-      const fresh = matches.length === 1 && changed.length === 1 && changed[0].name === matches[0].name;
-      const recovered = status.status === 'error' && fresh && !pending.previous_names.includes(matches[0].name);
-      if ((status.status !== 'ok' && !recovered) || !fresh) {
-        const error = status.status === 'ok' ? `A autorização não corresponde a ${pending.email}. Conecte novamente escolhendo esse e-mail.` : 'A autorização expirou ou falhou. Inicie uma nova conexão.';
-        await this.saveState({ ...state, pending_oauth: { ...pending, error }, revision: state.revision + 1 }); return;
-      }
-      const credential = matches[0];
-      if (basename(credential.name) !== credential.name) throw new BridgeError(503, 'O arquivo da conta não é válido.');
-      const existing = state.accounts.find(a => a.email.toLowerCase() === pending.email);
-      const nextIndex = Math.max(0, ...state.accounts.map(a => Number(a.prefix.slice(6)))) + 1;
-      const prefix = existing?.prefix ?? `conta-${String(nextIndex).padStart(2, '0')}`;
-      await this.management.patchCredential(credential.name, { prefix, priority: existing ? 1000 - state.priority_order.indexOf(existing.email) * 100 : 0 });
-      await chmod(join(this.runtimeDir, 'auth', credential.name), 0o600);
-      const account = { email: credential.email, name: credential.name, prefix, plan: credential.plan };
-      const accounts = state.accounts.filter(a => a.email !== existing?.email).concat(account);
-      const order = existing ? state.priority_order.map(e => e === existing.email ? credential.email : e) : [...state.priority_order, credential.email];
-      await this.saveState({ ...state, accounts, priority_order: order, fixed_email: state.fixed_email === existing?.email ? credential.email : state.fixed_email,
-        pending_oauth: null, revision: state.revision + 1, last_connection: { email: credential.email, at: new Date(this.now()).toISOString() } });
-      if (existing) this.invalidateCapabilities(existing.name);
-      this.invalidateCapabilities(credential.name);
-      this.removedAccounts.delete(credential.email);
-      this.credentialCache = null;
-    });
+    if (!(await this.readState()).pending_oauth) return;
+    return this.mutate(() => this.connections.poll());
   }
   disconnect(email) {
     return this.mutate(async () => {
+      email = canonicalEmail(email);
       const state = await this.readState();
       const account = state.accounts.find(a => a.email === email);
       if (!account) throw new BridgeError(404, 'Conta não encontrada.');
@@ -471,6 +468,7 @@ export class PoolController {
   }
   identity(credential) { return createHash('sha256').update(`${credential.name}\0${credential.account_id}`).digest('hex'); }
   resetAccount(email, { revision, automatic = false } = {}) {
+    email = canonicalEmail(email);
     if (this.resetInFlight.has(email)) return this.resetInFlight.get(email);
     const pending = this.performReset(email, { revision, automatic }).finally(() => {
       if (this.resetInFlight.get(email) === pending) this.resetInFlight.delete(email);
@@ -572,7 +570,7 @@ export class PoolController {
       const credentials = await this.credentials(true);
       for (const email of state.auto_reset_emails) {
         if (this.pausedForUpdate) break;
-        const account = state.accounts.find(a => a.email === email), credential = credentials.find(c => c.name === account.name && c.email === email);
+        const account = state.accounts.find(a => a.email === email), credential = this.credentialForAccount(credentials, account);
         if (credential) await this.maybeAutomaticReset(email, credential, await this.quota(credential));
       }
     })().finally(() => { if (this.lastAutomaticRun === pending) this.lastAutomaticRun = null; });
@@ -604,13 +602,13 @@ export class PoolController {
     let state = await this.readState();
     const credentials = await this.credentials(refresh);
     if (refresh) await Promise.all(state.accounts.map(async a => {
-      const credential = credentials.find(c => c.name === a.name && c.email === a.email);
+      const credential = this.credentialForAccount(credentials, a);
       if (credential) await this.quota(credential);
     }));
     state = await this.readState();
     const rows = state.priority_order.map(email => {
       const account = state.accounts.find(a => a.email === email);
-      const credential = credentials.find(c => c.name === account.name && c.email === email);
+      const credential = this.credentialForAccount(credentials, account);
       const quota = this.quotas.get(email) ?? unknownQuota('unchecked');
       return { email, account, credential, quota, connected: Boolean(credential), disabled: Boolean(credential?.disabled) };
     });
@@ -630,7 +628,7 @@ export class PoolController {
       auto_reset_emails: state.auto_reset_emails, auto_reset_threshold_percent: 5,
       credit_phase: credit.allowed, credit_block_reason: credit.reason,
       next_eligible_account: (state.mode === 'fixed' ? accounts.find(a => a.email === state.fixed_email && a.eligible) : accounts.find(a => a.eligible))?.email ?? null,
-      connection: state.pending_oauth ? { email: state.pending_oauth.email, started_at: state.pending_oauth.started_at, error: state.pending_oauth.error ?? null } : null,
+      connection: state.pending_oauth ? { email: state.pending_oauth.email, started_at: state.pending_oauth.started_at, error: state.pending_oauth.error ?? null, error_code: state.pending_oauth.error_code ?? null, url: state.pending_oauth.error_code ? null : connectionURL(state.pending_oauth.url) } : null,
       last_connection: state.last_connection ?? null, accounts,
     };
   }

@@ -7,7 +7,7 @@ export const baseModels = Object.freeze([
 export const models = Object.freeze(baseModels.flatMap(base => [
   { id: `claude-${base.family}-5-5`, label: base.label, target: base.id, baseModel: base.id, mode: 'normal', serviceTier: 'default', family: base.family },
   { id: `anthropic.claude-${base.family}-5-5`, label: `${base.label} Fast`, target: `${base.id}-fast`, baseModel: base.id, mode: 'fast', serviceTier: 'priority' },
-  ...(base.ultra ? [{ id: `us.anthropic.claude-${base.family}-5-5`, label: `${base.label} Ultra`, target: `${base.id}-ultra`, baseModel: base.id, mode: 'ultra', serviceTier: 'ultrafast' }] : []),
+  ...(base.ultra ? [{ id: `us.anthropic.claude-${base.family}-5-5`, label: `${base.label} Ultrafast`, target: `${base.id}-ultra`, baseModel: base.id, mode: 'ultra', serviceTier: 'ultrafast' }] : []),
 ]).map(Object.freeze));
 
 const routing = new Map(models.flatMap(model => [[model.id, model], [model.target, model]]));

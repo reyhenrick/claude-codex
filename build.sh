@@ -45,6 +45,13 @@ done
 xcrun swift Scripts/make-icon.swift "$STAGING/Accounts.iconset"
 iconutil -c icns "$STAGING/Accounts.iconset" -o "$APP/Contents/Resources/Accounts.icns"
 cp Info.plist "$APP/Contents/Info.plist"
+python3 - "$APP/Contents/Resources/service-version.json" <<'PYTHON'
+from pathlib import Path
+import json, plistlib, sys
+with open('Info.plist', 'rb') as source:
+    build = plistlib.load(source)['CFBundleVersion']
+Path(sys.argv[1]).write_text(json.dumps({'build': build, 'protocol': 1}) + '\n')
+PYTHON
 for locale in en pt es fr de it; do
     /usr/bin/ditto "Resources/$locale.lproj" "$APP/Contents/Resources/$locale.lproj"
 done

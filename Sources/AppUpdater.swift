@@ -128,6 +128,8 @@ private final class UpdateBridge {
     private let resources: URL
     private let session: URLSession
     let recoverySupport: UpdateRecoverySupport
+    private var updateGuardProcess: Process?
+    private var updateGuardInput: FileHandle?
     private var target: String { "gui/\(getuid())/\(label)" }
 
     init(resources: URL) {
@@ -165,6 +167,11 @@ private final class UpdateBridge {
     func validateOwnership() async throws {
         let plist = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/LaunchAgents/\(label).plist")
+        var file = stat()
+        guard lstat(plist.path, &file) == 0, file.st_mode & S_IFMT == S_IFREG,
+              file.st_uid == getuid(), file.st_nlink == 1, file.st_mode & 0o077 == 0 else {
+            throw UpdateFailure(key: "updater.serviceOwnership")
+        }
         let data = try Data(contentsOf: plist)
         guard let value = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
               value["Label"] as? String == label,
@@ -177,10 +184,10 @@ private final class UpdateBridge {
         }
         let job = try await launchctl(["print", target])
         if job.status == 0 {
-            guard job.output.split(separator: "\n").contains(where: {
-                $0.trimmingCharacters(in: .whitespaces) == "program = \(arguments[0])"
-            }) else { throw UpdateFailure(key: "updater.serviceOwnership") }
-        }
+            let registered = try UpdateLaunchJob(output: job.output)
+            guard registered.program == arguments[0], registered.arguments == arguments else { throw UpdateFailure(key: "updater.serviceOwnership") }
+        } else if job.status != 113 { throw UpdateFailure(key: "updater.serviceOwnership") }
+        try await acquireUpdateGuard()
     }
 
     func stop(localReady: () -> Bool) async throws {
@@ -192,7 +199,7 @@ private final class UpdateBridge {
             return Int32(text.dropFirst(6))
         }.first
         try Task.checkCancellation()
-        guard job.status == 0, let pid, pid > 1 else { throw UpdateFailure(key: "updater.preparationError") }
+        guard job.status == 0, let pid, let identity = UpdateProcessIdentity.capture(pid) else { throw UpdateFailure(key: "updater.preparationError") }
         let finalReadiness = try await readiness()
         try Task.checkCancellation()
         guard finalReadiness.canInstall else { throw UpdateFailure(key: "updater.busy") }
@@ -205,7 +212,7 @@ private final class UpdateBridge {
         while true {
             try Task.checkCancellation()
             let registered = try await launchctl(["print", target]).status == 0
-            let running = kill(pid, 0) == 0 || errno != ESRCH
+            let running = identity.isRunning
             let responding = (try? await readiness()) != nil
             if !registered && !running && !responding { return }
             try await Task.sleep(for: .seconds(1))
@@ -213,6 +220,7 @@ private final class UpdateBridge {
     }
 
     func recover() async throws {
+        defer { releaseUpdateGuard() }
         if let record = try recoverySupport.store.load(), record.owner != UpdateProcessIdentity.capture(getpid()) {
             while !UpdateInstallerActivity.mayRecover(current: UpdateProcessIdentity.capture(getpid()), owner: record.owner,
                                                      ownerIsRunning: record.owner.isRunning,
@@ -223,7 +231,7 @@ private final class UpdateBridge {
             }
         }
         try await validateOwnership()
-        let result = try await runSetup(["action": "service"])
+        let result = try await runSetup(["action": "service-recovery"])
         guard result.ok else { throw UpdateFailure(key: "updater.recoveryError") }
         var failure: Error = UpdateFailure(key: "updater.recoveryError")
         for _ in 0..<15 {
@@ -240,6 +248,47 @@ private final class UpdateBridge {
 
     private func launchctl(_ arguments: [String]) async throws -> (status: Int32, output: String) {
         try await UpdateCommand.run("/bin/launchctl", arguments)
+    }
+
+    private func acquireUpdateGuard() async throws {
+        if updateGuardProcess?.isRunning == true { return }
+        releaseUpdateGuard()
+        let process = Process(), input = Pipe(), output = Pipe()
+        process.executableURL = resources.appendingPathComponent("bin/BridgeService")
+        process.arguments = ["--update-guard", FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Claude Codex Bridge/pool").path]
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        let expiration = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        do { try process.run() }
+        catch { try? input.fileHandleForWriting.close(); throw UpdateFailure(key: "updater.preparationError") }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: expiration)
+        let ready = await Task.detached { () -> Bool in
+            var data = Data()
+            while data.count < 32 {
+                guard let part = try? output.fileHandleForReading.read(upToCount: 1), !part.isEmpty else { return false }
+                data.append(part)
+                if part.first == 10 { return data == Data("ready\n".utf8) }
+            }
+            return false
+        }.value
+        expiration.cancel()
+        guard ready, process.isRunning, !Task.isCancelled else {
+            try? input.fileHandleForWriting.close()
+            throw UpdateFailure(key: "updater.busy")
+        }
+        updateGuardProcess = process
+        updateGuardInput = input.fileHandleForWriting
+    }
+
+    func releaseUpdateGuard() {
+        // The helper owns only the coordination lock. EOF releases it on normal
+        // quit and automatically when this application crashes; no bridge PID is
+        // signalled or forcibly replaced here.
+        try? updateGuardInput?.close()
+        updateGuardInput = nil
+        updateGuardProcess = nil
     }
 }
 
@@ -404,6 +453,7 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate, @preconc
         preparationTask = nil
         recovery.start(after: pending, operation: { [weak self] in
             guard let self else { return }
+            defer { bridge.releaseUpdateGuard() }
             try await preparation.recover(force: force)
             waitingForIdle = gate.isWaiting
             lastError = nil

@@ -178,3 +178,27 @@
 "launcher.connectionRequired" = "Connect an account first";
 "launcher.connectAccounts" = "Open Claude Codex and connect an account with access to a supported model. Then open this installation again.";
 "updater.stagedOnQuit" = "This update is already downloaded and will install when you quit. Automatic installation remains off for future updates.";
+
+"quota.codex" = "Codex";
+"quota.additional" = "Additional limit";
+"quota.namedWindow" = "{0} · {1}";
+"quota.unknownPeriod" = "Period unavailable";
+"quota.seconds" = "{0} seconds";
+"quota.minutes" = "{0} minutes";
+"connection.error.account_mismatch" = "The browser authorized a different account. Try again and choose the email entered here.";
+"connection.error.expired" = "Authorization expired. Start the connection again.";
+"connection.error.import_failed" = "Authorization completed, but the account could not be added. Try connecting it again.";
+"connection.error.reconnect_busy" = "This account has an operation in progress. Wait for it to finish before reconnecting.";
+"connection.error.session_unavailable" = "The authorization session is no longer available. Cancel it and start a new connection.";
+"service.setup.invalid_name" = "Use a name of up to 60 characters, starting with a letter or number. Use only letters, numbers, spaces, periods, underscores or hyphens; do not use two consecutive periods.";
+"service.setup.destination_exists" = "An application or destination with this name already exists. Choose another name to preserve it.";
+"service.setup.source_invalid" = "Select the installed official Claude.app. The selected path is not a valid Claude application.";
+"service.setup.source_untrusted" = "The selected Claude app failed signature verification. Install the official app again and select it.";
+"service.setup.paths_conflict" = "The source and destination folders overlap. Choose separate folders before migrating.";
+
+"service.maintenancePending" = "The account service update is pending. Wait for ongoing work and account operations to finish. You can complete or cancel an open sign-in.";
+"service.maintenanceLegacy" = "The connection still uses an older service. Finish ongoing work before migrating this connection. The new service is not active yet.";
+
+"setup.previewUnavailable" = "This is a preview. Creating real installations is disabled.";
+
+"connection.cancelUnconfirmed" = "The previous authorization is still pending. Complete or cancel it before trying again.";

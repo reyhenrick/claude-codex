@@ -79,7 +79,7 @@ func verify(feedURL: URL, archiveURL: URL, key: String, build: String, version: 
     let allEnclosures = try document.nodes(forXPath: "//*[local-name() = 'enclosure']")
     try require(enclosures.count == 1 && allEnclosures.count == 1, "Expected one update enclosure")
     let enclosure = enclosures[0]
-    let expectedURL = "https://github.com/reyhenrick/codex-accounts/releases/download/v\(version)/ClaudeCodex-macOS.zip"
+    let expectedURL = "https://github.com/reyhenrick/claude-codex/releases/download/v\(version)/ClaudeCodex-macOS.zip"
     try require(enclosure.attribute(forName: "url")?.stringValue == expectedURL, "Update URL must use the matching immutable release tag")
     try require(enclosure.attribute(forName: "type")?.stringValue == "application/octet-stream", "Unexpected archive content type")
     try require(enclosure.attribute(forLocalName: "version", uri: namespace) == nil && enclosure.attribute(forLocalName: "shortVersionString", uri: namespace) == nil, "Enclosure version attributes are not allowed")

@@ -51,16 +51,32 @@ final class AccountsModel: ObservableObject {
     @Published var confirmation: AccountConfirmation?
     @Published var openAtLogin = SMAppService.mainApp.status == .enabled
     @Published var lastRefresh: Date?
+    @Published private(set) var maintenancePending: Bool
+    @Published private(set) var maintenanceMessage: String?
+    @Published private(set) var maintenanceNeedsAttention = false
+    @Published private(set) var preparingService = false
     var beforeServicePreparation: (() async -> Bool)?
     private var loginURL: URL?
+    private var loginEmail: String?
     private var polling: Task<Void, Never>?
     private let isStaging: Bool
     private let session: URLSession
     private let openURL: (URL) -> Bool
+    private let setupExecutor: ([String: Any]) async throws -> SetupResult
+    private let expectedServiceBuild: String?
+    private var awaitingServiceTransition = false
     let baseURL: URL
 
-    init(staging: Bool = false, session suppliedSession: URLSession? = nil, openURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }) {
+    init(staging: Bool = false, session suppliedSession: URLSession? = nil,
+         expectedServiceBuild: String? = ServiceReadiness.expectedBuild,
+         setupExecutor suppliedSetup: (([String: Any]) async throws -> SetupResult)? = nil,
+         openURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }) {
         isStaging = staging; self.openURL = openURL
+        self.expectedServiceBuild = expectedServiceBuild
+        maintenancePending = !staging
+        if let suppliedSetup { setupExecutor = suppliedSetup }
+        else if staging { setupExecutor = { _ in throw BridgeFailure(message: L10n.text("error.localService")) } }
+        else { setupExecutor = runSetup }
         baseURL = URL(string: staging ? "http://127.0.0.1:18769" : "http://127.0.0.1:18765")!
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 45
@@ -68,12 +84,15 @@ final class AccountsModel: ObservableObject {
         session = suppliedSession ?? URLSession(configuration: config)
     }
     func start() {
+        guard polling == nil else { return }
         polling = Task { [weak self] in
-            if let self, !self.isStaging { await self.prepareConnectionIfNeeded() }
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.load(refresh: self.snapshot == nil)
-                let interval = self.snapshot?.connection == nil ? 15 : 2
+                if !self.isStaging, self.snapshot == nil { await self.load(refreshNewAccounts: false) }
+                if !self.isStaging { await self.checkServiceReadiness() }
+                guard !Task.isCancelled else { return }
+                await self.load(refresh: self.snapshot == nil && !self.maintenancePending)
+                let interval = self.snapshot?.connection == nil && !self.maintenancePending ? 15 : 2
                 try? await Task.sleep(for: .seconds(interval))
             }
         }
@@ -104,12 +123,14 @@ final class AccountsModel: ObservableObject {
             case 409: fallback = "error.conflict"
             default: fallback = "error.serviceAction"
             }
-            throw BridgeFailure(message: L10n.serviceMessage(code: detail?.error.code, fallback: fallback))
+            let connectionMessage = path.hasPrefix("_bridge/connect") ? PendingConnection.localizedError(code: detail?.error.code) : nil
+            throw BridgeFailure(message: connectionMessage ?? L10n.serviceMessage(code: detail?.error.code, fallback: fallback))
         }
         return try decoder.decode(T.self, from: data)
     }
-    func load(refresh: Bool = false) async {
-        guard !refreshing, !applying else { return }
+    @discardableResult
+    func load(refresh: Bool = false, refreshNewAccounts: Bool = true) async -> Bool {
+        guard !refreshing, !applying else { return false }
         refreshing = true
         defer { refreshing = false }
         do {
@@ -117,17 +138,19 @@ final class AccountsModel: ObservableObject {
             let previousAccounts = Set(snapshot?.accounts.map(\.email) ?? [])
             let connectedAccount = result.connection == nil && snapshot?.connection != nil
             let addedAccount = result.accounts.contains { !previousAccounts.contains($0.email) }
-            if !refresh && (connectedAccount || addedAccount) {
+            if refreshNewAccounts && !refresh && (connectedAccount || addedAccount) {
                 snapshot = result
                 result = try await call("_bridge/refresh", body: [:])
                 lastRefresh = Date()
             }
             snapshot = result
             if refresh { lastRefresh = Date() }
-            if result.connection == nil { loginURL = nil }
+            if result.connection == nil { loginURL = nil; loginEmail = nil }
             queryError = nil
-        } catch is CancellationError {} catch {
+            return true
+        } catch is CancellationError { return false } catch {
             queryError = userMessage(error)
+            return false
         }
     }
     private func userMessage(_ error: Error) -> String {
@@ -143,7 +166,7 @@ final class AccountsModel: ObservableObject {
             do {
                 let result: PoolSnapshot = try await call(path, body: body)
                 snapshot = result; queryError = nil
-                if result.connection == nil { loginURL = nil }
+                if result.connection == nil { loginURL = nil; loginEmail = nil }
             } catch {
                 if path == "_bridge/reset", !(error is BridgeFailure) {
                     actionError = L10n.text("error.resetUncertain")
@@ -224,17 +247,55 @@ final class AccountsModel: ObservableObject {
         Task {
             do {
                 let result: LoginResponse = try await call("_bridge/connect", body: ["email": email])
-                guard let url = URL(string: result.authUrl), url.scheme == "https", url.host == "auth.openai.com", url.path == "/oauth/authorize" else {
+                guard let url = PendingConnection.authorizationURL(result.authUrl) else {
                     throw BridgeFailure(message: L10n.text("error.authorizationURL"))
                 }
-                loginURL = url; showingConnectionForm = false; connectionEmail = ""
+                loginURL = url; loginEmail = result.email; showingConnectionForm = false; connectionEmail = ""
                 if !openURL(url) { actionError = L10n.text("error.openBrowser") }
                 applying = false; await load()
-            } catch { applying = false; actionError = userMessage(error) }
+            } catch {
+                applying = false; actionError = userMessage(error)
+                let refreshed = await load(refreshNewAccounts: false)
+                if refreshed, let connection = snapshot?.connection, connection.email.lowercased() == email.lowercased() {
+                    showingConnectionForm = false; connectionEmail = ""
+                    if !(error is BridgeFailure) { actionError = nil }
+                }
+            }
         }
     }
-    func continueLogin() { if let loginURL { _ = openURL(loginURL) } }
-    var canContinueLogin: Bool { loginURL != nil }
+    func cancelConnectionForm() {
+        guard !applying else { return }
+        showingConnectionForm = false; connectionEmail = ""
+    }
+    private var continuationURL: URL? {
+        guard let connection = snapshot?.connection, !connection.hasError else { return nil }
+        if connection.url != nil { return PendingConnection.authorizationURL(connection.url) }
+        guard loginEmail?.lowercased() == connection.email.lowercased() else { return nil }
+        return loginURL
+    }
+    func continueLogin() {
+        guard !applying, !refreshing, let url = continuationURL else { return }
+        actionError = openURL(url) ? nil : L10n.text("error.openBrowser")
+    }
+    var canContinueLogin: Bool { continuationURL != nil }
+    func retryConnection() {
+        guard !applying, !refreshing, let connection = snapshot?.connection, connection.canRetry else { return }
+        let email = connection.email
+        applying = true; actionError = nil
+        Task {
+            defer { applying = false }
+            do {
+                let result: PoolSnapshot = try await call("_bridge/connect/cancel", body: [:])
+                snapshot = result; queryError = nil
+                guard result.connection == nil else {
+                    actionError = L10n.text("connection.cancelUnconfirmed")
+                    return
+                }
+                loginURL = nil; loginEmail = nil
+                connectionEmail = email; showingConnectionForm = true
+            } catch { actionError = userMessage(error) }
+        }
+    }
     func cancelConnection() {
         guard !applying, !refreshing else { return }
         mutate("_bridge/connect/cancel", body: [:])
@@ -247,37 +308,56 @@ final class AccountsModel: ObservableObject {
             if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
         } catch { actionError = L10n.text("error.loginItem", error.localizedDescription) }
     }
-    private func prepareConnectionIfNeeded() async {
-        if let beforeServicePreparation, await beforeServicePreparation() == false {
-            queryError = L10n.text("error.localService"); return
+    private struct ServiceHealth: Decodable {
+        let backend: String
+        let service: ServiceIdentity?
+        let draining: Bool?
+    }
+    private func currentServiceIsReady() async -> Bool {
+        guard let health: ServiceHealth = try? await call("healthz"), health.backend == "codex-pool" else { return false }
+        return ServiceReadiness.isCurrent(health.service, draining: health.draining != false, expectedBuild: expectedServiceBuild)
+    }
+    func checkServiceReadiness(forcePreparation: Bool = false) async {
+        guard !preparingService else { return }
+        preparingService = true
+        defer { preparingService = false }
+        if await currentServiceIsReady() {
+            maintenancePending = false; maintenanceMessage = nil; maintenanceNeedsAttention = false; awaitingServiceTransition = false
+            return
         }
-        struct Health: Decodable { let backend: String }
-        do { let health: Health = try await call("healthz"); if health.backend == "codex-pool" { return } } catch {}
-        applying = true
-        defer { applying = false }
+        maintenancePending = true
+        maintenanceNeedsAttention = false
+        maintenanceMessage = L10n.text("service.maintenancePending")
         do {
-            let result = try await runSetup(["action": "service"])
-            if !result.ok { throw BridgeFailure(message: result.localizedMessage(fallback: "error.setup")) }
-            for _ in 0..<40 {
-                if let health: Health = try? await call("healthz"), health.backend == "codex-pool" { return }
-                try? await Task.sleep(for: .milliseconds(250))
+            try Task.checkCancellation()
+            let action = !forcePreparation && awaitingServiceTransition ? "service-status" : "service"
+            if action == "service", let beforeServicePreparation, await beforeServicePreparation() == false {
+                throw BridgeFailure(message: L10n.text("error.localService"))
             }
-            queryError = L10n.text("error.localService")
-        } catch { queryError = userMessage(error) }
+            awaitingServiceTransition = true
+            let result = try await setupExecutor(["action": action])
+            try Task.checkCancellation()
+            if result.service?.status == .legacy {
+                maintenanceMessage = L10n.text("service.maintenanceLegacy")
+                maintenanceNeedsAttention = true
+            } else if result.ok, result.service?.isReady == true {
+                if await currentServiceIsReady() {
+                    maintenancePending = false; maintenanceMessage = nil; maintenanceNeedsAttention = false; awaitingServiceTransition = false
+                }
+            } else if !(result.ok && result.service?.isPending == true) {
+                throw BridgeFailure(message: result.localizedMessage(fallback: "error.setup"))
+            }
+        } catch is CancellationError {} catch {
+            maintenanceMessage = userMessage(error)
+            maintenanceNeedsAttention = true
+        }
     }
     func restoreConnection() {
-        guard !applying, !refreshing else { return }
-        applying = true; actionError = nil
+        guard !applying, !refreshing, !preparingService else { return }
+        actionError = nil
         Task {
-            do {
-                if let beforeServicePreparation, await beforeServicePreparation() == false {
-                    throw BridgeFailure(message: L10n.text("error.localService"))
-                }
-                let result = try await runSetup(["action": "service"])
-                if !result.ok { throw BridgeFailure(message: result.localizedMessage(fallback: "error.setup")) }
-                try? await Task.sleep(for: .seconds(2))
-                applying = false; await load(refresh: true)
-            } catch { applying = false; actionError = error.localizedDescription }
+            await checkServiceReadiness(forcePreparation: true)
+            await load(refresh: !maintenancePending)
         }
     }
     func openSetup() { NotificationCenter.default.post(name: Notification.Name("ShowClaudeSetup"), object: nil) }

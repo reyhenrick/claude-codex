@@ -7,7 +7,8 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { ensureClientKey, readClientKey, authorizeClient } from './client-auth.mjs';
-import { ensureRuntime, makeConfig, upgradeModelConfig } from './runtime.mjs';
+import { makeConfig, upgradeModelConfig } from './runtime.mjs';
+import { ensureTestRuntime as ensureRuntime } from './test-support/runtime-helper.mjs';
 import { createPoolRouter } from './pool-router.mjs';
 
 const syntheticKey = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-';

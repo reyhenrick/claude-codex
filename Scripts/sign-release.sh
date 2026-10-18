@@ -28,20 +28,19 @@ PUBLIC_KEY=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$INFO")
 REQUIRE_SIGNED_FEED=$(/usr/libexec/PlistBuddy -c 'Print :SURequireSignedFeed' "$INFO")
 [ "$REQUIRE_SIGNED_FEED" = true ] || { echo 'The application must require signed feeds.' >&2; exit 1; }
 cp "$OUTPUT/ClaudeCodex-macOS.zip" "$ARCHIVES/ClaudeCodex-macOS.zip"
-/usr/bin/python3 - "$VERSION" "$PWD/CHANGELOG.md" "$ARCHIVES/ClaudeCodex-macOS.txt" <<'PY'
+/usr/bin/python3 - "$VERSION" "$PWD/RELEASE_NOTES.md" "$ARCHIVES/ClaudeCodex-macOS.txt" <<'PY'
 from pathlib import Path
-import re
 import sys
 
 version, source, output = sys.argv[1:]
-changelog = Path(source).read_text() if Path(source).is_file() else ""
-section = re.search(r'^## ' + re.escape(version) + r'(?:\s[^\n]*)?\n(.*?)(?=^## |\Z)', changelog, re.M | re.S)
-notes = section.group(1).strip() if section else f'Claude Codex {version}'
+notes = Path(source).read_text().strip()
+if not notes.startswith(f"# Claude Codex {version}\n"):
+    raise SystemExit("Release notes must describe the packaged version.")
 Path(output).write_text(notes + '\n')
 PY
 "$GENERATOR" --account com.henrick.codex-accounts.sparkle \
-    --download-url-prefix "https://github.com/reyhenrick/codex-accounts/releases/download/v$VERSION/" \
-    --link 'https://github.com/reyhenrick/codex-accounts' --embed-release-notes \
+    --download-url-prefix "https://github.com/reyhenrick/claude-codex/releases/download/v$VERSION/" \
+    --link 'https://github.com/reyhenrick/claude-codex' --embed-release-notes \
     --maximum-deltas 0 --maximum-versions 1 --versions "$BUILD_NUMBER" \
     -o "$ARCHIVES/appcast.xml" "$ARCHIVES"
 cmp -s "$OUTPUT/ClaudeCodex-macOS.zip" "$ARCHIVES/ClaudeCodex-macOS.zip" || { echo 'The archive changed during signing.' >&2; exit 1; }

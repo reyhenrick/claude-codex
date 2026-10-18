@@ -22,7 +22,7 @@ ROOT = Path.cwd()
 ARCHITECTURES = {"arm64", "x86_64"}
 PRIVATE_NAMES = {".git", ".codex", ".claude", ".env", ".idea", ".vscode", ".build", ".swiftpm", "build", "dist", "work", "installed-backups", "__pycache__", "tests", "Tests", "fixtures", "auth.json", "config.yaml", "config.yml", "accounts.json", "pool.json", "credentials.json", "cookies.json"}
 ARTIFACTS = {"ClaudeCodex-macOS.dmg", "ClaudeCodex-macOS.zip", "release-metadata.json", "SHA256SUMS.txt"}
-FEED_URL = "https://github.com/reyhenrick/codex-accounts/releases/latest/download/appcast.xml"
+FEED_URL = "https://github.com/reyhenrick/claude-codex/releases/latest/download/appcast.xml"
 FRAMEWORK = PurePosixPath("Contents/Frameworks/Sparkle.framework")
 SPARKLE_LINKS = {
     "Autoupdate": "Versions/Current/Autoupdate",

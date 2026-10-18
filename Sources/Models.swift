@@ -6,9 +6,23 @@ struct QuotaWindow: Decodable, Hashable {
     let windowSeconds: Double
     let resetAt: Double?
     var title: String {
+        let group: String
+        switch name.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "": return periodTitle
+        case "Uso do Codex": group = L10n.text("quota.codex")
+        case "Limite adicional": group = L10n.text("quota.additional")
+        default: group = name
+        }
+        return L10n.text("quota.namedWindow", group, periodTitle)
+    }
+    private var periodTitle: String {
         if windowSeconds == 604800 { return L10n.text("quota.week") }
         if windowSeconds == 18000 { return L10n.text("quota.fiveHours") }
-        return L10n.text("quota.hours", String(Int(windowSeconds / 3600)))
+        guard windowSeconds.isFinite, windowSeconds > 0,
+              let seconds = Int(exactly: windowSeconds.rounded(.up)) else { return L10n.text("quota.unknownPeriod") }
+        if seconds < 60 { return L10n.text("quota.seconds", String(seconds)) }
+        if seconds < 3600 { return L10n.text("quota.minutes", String(seconds / 60)) }
+        return L10n.text("quota.hours", String(seconds / 3600))
     }
     var remaining: Double { max(0, min(100, 100 - usedPercent)) }
 }
@@ -125,7 +139,39 @@ struct Account: Decodable, Identifiable, Hashable {
 }
 
 struct AccountUse: Decodable { let email: String; let at: String }
-struct PendingConnection: Decodable { let email: String; let startedAt: String; let error: String? }
+struct PendingConnection: Decodable {
+    let email: String
+    let startedAt: String
+    let error: String?
+    let errorCode: String?
+    let url: String?
+    var hasError: Bool { error != nil || errorCode != nil }
+    var canRetry: Bool { hasError && errorCode != "oauth.reconnect_busy" }
+    var title: String {
+        canRetry ? L10n.text("connection.retryTitle") : L10n.text("connection.connecting", email)
+    }
+    var description: String {
+        guard hasError else { return L10n.text("connection.description") }
+        return Self.localizedError(code: errorCode) ?? L10n.text("connection.retryDescription")
+    }
+    static func localizedError(code: String?) -> String? {
+        switch code {
+        case "oauth.account_mismatch": return L10n.text("connection.error.account_mismatch")
+        case "oauth.expired": return L10n.text("connection.error.expired")
+        case "oauth.import_failed": return L10n.text("connection.error.import_failed")
+        case "oauth.reconnect_busy": return L10n.text("connection.error.reconnect_busy")
+        case "oauth.session_unavailable": return L10n.text("connection.error.session_unavailable")
+        default: return nil
+        }
+    }
+    static func authorizationURL(_ value: String?) -> URL? {
+        guard let value, let components = URLComponents(string: value),
+              components.scheme?.lowercased() == "https", components.host?.lowercased() == "auth.openai.com",
+              components.path == "/oauth/authorize", components.user == nil, components.password == nil,
+              components.port == nil || components.port == 443, components.fragment == nil else { return nil }
+        return components.url
+    }
+}
 struct PoolSnapshot: Decodable {
     let mode: String
     let fixedEmail: String?

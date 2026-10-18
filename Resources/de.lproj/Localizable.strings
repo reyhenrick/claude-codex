@@ -178,3 +178,27 @@
 "launcher.connectionRequired" = "Zuerst ein Konto verbinden";
 "launcher.connectAccounts" = "Öffne Claude Codex und verbinde ein Konto mit Zugriff auf ein unterstütztes Modell. Öffne diese Installation danach erneut.";
 "updater.stagedOnQuit" = "Dieses Update wurde bereits heruntergeladen und wird beim Beenden installiert. Automatische Installation bleibt für künftige Updates deaktiviert.";
+
+"quota.codex" = "Codex";
+"quota.additional" = "Zusätzliches Limit";
+"quota.namedWindow" = "{0} · {1}";
+"quota.unknownPeriod" = "Zeitraum nicht verfügbar";
+"quota.seconds" = "{0} Sekunden";
+"quota.minutes" = "{0} Minuten";
+"connection.error.account_mismatch" = "Im Browser wurde ein anderes Konto autorisiert. Versuche es erneut und wähle die hier eingegebene E-Mail-Adresse.";
+"connection.error.expired" = "Die Autorisierung ist abgelaufen. Starte die Verbindung erneut.";
+"connection.error.import_failed" = "Die Autorisierung war erfolgreich, aber das Konto konnte nicht hinzugefügt werden. Versuche erneut, es zu verbinden.";
+"connection.error.reconnect_busy" = "Für dieses Konto läuft eine Aktion. Warte auf ihren Abschluss, bevor du es erneut verbindest.";
+"connection.error.session_unavailable" = "Die Autorisierungssitzung ist nicht mehr verfügbar. Brich sie ab und starte eine neue Verbindung.";
+"service.setup.invalid_name" = "Verwende einen Namen mit höchstens 60 Zeichen, der mit einem Buchstaben oder einer Zahl beginnt. Erlaubt sind Buchstaben, Zahlen, Leerzeichen, Punkte, Unterstriche und Bindestriche; keine zwei aufeinanderfolgenden Punkte.";
+"service.setup.destination_exists" = "Eine App oder ein Ziel mit diesem Namen ist bereits vorhanden. Wähle einen anderen Namen, um es zu erhalten.";
+"service.setup.source_invalid" = "Wähle die installierte offizielle Claude.app. Der ausgewählte Pfad enthält keine gültige Claude-App.";
+"service.setup.source_untrusted" = "Die Signatur der ausgewählten Claude-App konnte nicht bestätigt werden. Installiere die offizielle App erneut und wähle sie aus.";
+"service.setup.paths_conflict" = "Quell- und Zielordner überschneiden sich. Wähle vor der Übernahme getrennte Ordner.";
+
+"service.maintenancePending" = "Das Update des Kontodienstes steht aus. Warte auf den Abschluss laufender Arbeiten und Kontoaktionen. Eine offene Anmeldung kannst du abschließen oder abbrechen.";
+"service.maintenanceLegacy" = "Die Verbindung nutzt noch einen älteren Dienst. Beende laufende Arbeiten, bevor du diese Verbindung migrierst. Der neue Dienst ist noch nicht aktiv.";
+
+"setup.previewUnavailable" = "Dies ist eine Vorschau. Das Erstellen echter Installationen ist deaktiviert.";
+
+"connection.cancelUnconfirmed" = "Die vorherige Autorisierung ist noch offen. Schließe sie ab oder brich sie ab, bevor du es erneut versuchst.";

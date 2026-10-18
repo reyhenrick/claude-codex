@@ -178,3 +178,27 @@
 "launcher.connectionRequired" = "Conecte uma conta primeiro";
 "launcher.connectAccounts" = "Abra o Claude Codex e conecte uma conta com acesso a um modelo compatível. Depois, abra esta instalação novamente.";
 "updater.stagedOnQuit" = "Esta atualização já foi baixada e será instalada ao sair. A instalação automática continua desativada para as próximas atualizações.";
+
+"quota.codex" = "Codex";
+"quota.additional" = "Limite adicional";
+"quota.namedWindow" = "{0} · {1}";
+"quota.unknownPeriod" = "Período indisponível";
+"quota.seconds" = "{0} segundos";
+"quota.minutes" = "{0} minutos";
+"connection.error.account_mismatch" = "O navegador autorizou outra conta. Tente novamente e escolha o e-mail informado aqui.";
+"connection.error.expired" = "A autorização expirou. Inicie a conexão novamente.";
+"connection.error.import_failed" = "A autorização foi concluída, mas não foi possível adicionar a conta. Tente conectá-la novamente.";
+"connection.error.reconnect_busy" = "Esta conta tem uma operação em andamento. Aguarde a conclusão antes de reconectar.";
+"connection.error.session_unavailable" = "A sessão de autorização não está mais disponível. Cancele-a e inicie uma nova conexão.";
+"service.setup.invalid_name" = "Use um nome de até 60 caracteres, começando com letra ou número. Use apenas letras, números, espaços, pontos, sublinhados ou hífens; não use a sequência “..”.";
+"service.setup.destination_exists" = "Já existe um aplicativo ou destino com esse nome. Escolha outro nome para preservá-lo.";
+"service.setup.source_invalid" = "Selecione o Claude.app oficial instalado. O caminho escolhido não contém um aplicativo Claude válido.";
+"service.setup.source_untrusted" = "A assinatura do Claude selecionado não foi validada. Instale novamente o aplicativo oficial e selecione-o.";
+"service.setup.paths_conflict" = "As pastas de origem e destino se sobrepõem. Escolha pastas separadas antes de migrar.";
+
+"service.maintenancePending" = "A atualização do serviço de contas está pendente. Aguarde os trabalhos e as operações em andamento. Você pode concluir ou cancelar um login aberto.";
+"service.maintenanceLegacy" = "A conexão ainda usa um serviço anterior. Conclua os trabalhos antes de migrar essa conexão. O novo serviço ainda não está ativo.";
+
+"setup.previewUnavailable" = "Esta é uma prévia. A criação de instalações reais está desativada.";
+
+"connection.cancelUnconfirmed" = "A autorização anterior ainda está pendente. Conclua ou cancele essa autorização antes de tentar novamente.";
