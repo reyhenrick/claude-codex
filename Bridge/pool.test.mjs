@@ -16,6 +16,7 @@ const root = fileURLToPath(new URL('../build/test-fixtures/', import.meta.url));
 await mkdir(root, { recursive: true });
 const emails = ['first@example.test', 'second@example.test', 'third@example.test'];
 const available = (used = 0) => ({ rate_limit: { allowed: true, limit_reached: false, primary_window: { used_percent: used, limit_window_seconds: 604800, reset_at: 2000000000 }, secondary_window: null }, additional_rate_limits: null });
+const exhausted = () => { const result = available(100); result.rate_limit.allowed = false; result.rate_limit.limit_reached = true; return result; };
 async function fixture(t) {
   const runtimeDir = await mkdtemp(root + 'controller-');
   const accounts = emails.map((email, i) => ({ email, name: `synthetic-${i}.json`, prefix: `conta-0${i + 1}`, plan: 'pro' }));
@@ -44,14 +45,14 @@ const post = (base, value = message, extra = {}) => authorizedFetch(base + '/v1/
 
 test('quota gate blocks exhausted paid-credit accounts, malformed results, and extra exhausted limits', () => {
   assert.equal(evaluateQuota(available()).eligible, true);
-  assert.equal(evaluateQuota({ ...available(100), credits: { has_credits: true, balance: 500 } }).eligible, false);
+  assert.equal(evaluateQuota({ ...exhausted(), credits: { has_credits: true, balance: 500 } }).eligible, false);
   assert.equal(evaluateQuota({ ...available(), rate_limit: { ...available().rate_limit, allowed: false } }).eligible, false);
   for (const value of [null, {}, { rate_limit: { allowed: true, limit_reached: false } }, available(NaN), available('0')]) assert.equal(evaluateQuota(value).eligible, false);
-  assert.equal(evaluateQuota({ ...available(), additional_rate_limits: [{ limit_name: 'another-model', rate_limit: available(100).rate_limit }] }).eligible, false);
+  assert.equal(evaluateQuota({ ...available(), additional_rate_limits: [{ limit_name: 'another-model', rate_limit: exhausted().rate_limit }] }).eligible, false);
 });
 
 test('automatic routing skips exhausted and unknown accounts; fixed mode stops instead of falling through', async t => {
-  const f = await fixture(t); f.quotas.set(emails[0], available(100)); f.quotas.set(emails[1], new Error('offline'));
+  const f = await fixture(t); f.quotas.set(emails[0], exhausted()); f.quotas.set(emails[1], new Error('offline'));
   const selected = []; for await (const a of f.controller.candidates({ model: 'claude-sonnet-5-5' })) selected.push(a.email);
   assert.deepEqual(selected, [emails[2]]); assert.deepEqual(f.calls, emails);
   await f.controller.update({ revision: 0, mode: 'fixed', fixed_email: emails[0] }); f.calls.length = 0;
@@ -81,7 +82,7 @@ test('concurrent requests share only the in-flight quota lookup and recheck on t
   const credential = (await f.controller.credentials())[0];
   const calls = Array.from({ length: 12 }, () => f.controller.quota(credential));
   resolve(available()); await Promise.all(calls); assert.equal(lookups, 1);
-  const next = f.controller.quota(credential); resolve(available(100)); assert.equal((await next).eligible, false); assert.equal(lookups, 2);
+  const next = f.controller.quota(credential); resolve(exhausted()); assert.equal((await next).eligible, false); assert.equal(lookups, 2);
 });
 
 test('normal and Fast mapping keeps explicit effort and complete tool history', () => {
@@ -122,7 +123,7 @@ test('a pre-stream 429 moves to the next eligible account, with the same Fast mo
 });
 
 test('an exhausted pool sends no inference even when purchased credits are available', async t => {
-  const f = await fixture(t); for (const email of emails) f.quotas.set(email, { ...available(100), credits: { has_credits: true } });
+  const f = await fixture(t); for (const email of emails) f.quotas.set(email, { ...exhausted(), credits: { has_credits: true } });
   let hit = false; const upstream = http.createServer((_, res) => { hit = true; res.end('{}'); }); await start(t, upstream);
   const base = await start(t, createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic' }));
   assert.equal((await post(base)).status, 429); assert.equal(hit, false);
@@ -225,12 +226,12 @@ test('parent and concurrent child agents retain separate routing and reasoning-c
 
 test('a model-specific cap blocks only that model at candidate selection and final dispatch validation', async t => {
   const f = await fixture(t);
-  const capped = { ...available(), additional_rate_limits: [{ limit_name: 'gpt-6-astra', rate_limit: available(100).rate_limit }] };
+  const capped = { ...available(), additional_rate_limits: [{ limit_name: 'gpt-6-astra', rate_limit: exhausted().rate_limit }] };
   for (const email of emails) f.quotas.set(email, capped);
   const sol = []; for await (const candidate of f.controller.candidates({ model: 'claude-sonnet-5-5' })) sol.push(candidate);
   assert.equal(sol.length, 3); assert.equal(await f.controller.validateCandidate(sol[0]), true);
   const astra = []; for await (const candidate of f.controller.candidates({ model: 'claude-opus-5-5' })) astra.push(candidate);
   assert.equal(astra.length, 0);
-  f.quotas.set(emails[0], { ...available(), additional_rate_limits: [{ limit_name: 'gpt-6.1-sol', rate_limit: available(100).rate_limit }] });
+  f.quotas.set(emails[0], { ...available(), additional_rate_limits: [{ limit_name: 'gpt-6.1-sol', rate_limit: exhausted().rate_limit }] });
   await f.controller.quota(sol[0].credential, { force: true }); assert.equal(f.controller.validateCandidateNow(sol[0]), false);
 });

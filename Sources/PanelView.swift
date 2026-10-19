@@ -228,6 +228,10 @@ private struct AccountRow: View {
             Text("\(index + 1)").font(.caption.monospacedDigit()).foregroundStyle(.tertiary).frame(width: 15).padding(.top, 2)
             VStack(alignment: .leading, spacing: 7) {
                 selectionButton
+                if account.serviceAllowsAtDisplayedLimit {
+                    Text(L10n.text("account.serviceAllowsUse")).font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Text(account.credits.label).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Text(account.resets.label).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if !account.resets.canApply, account.resets.reason == "not_eligible" {

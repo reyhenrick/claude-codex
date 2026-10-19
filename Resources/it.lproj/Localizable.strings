@@ -202,3 +202,4 @@
 "setup.previewUnavailable" = "Questa è un’anteprima. La creazione di installazioni reali è disattivata.";
 
 "connection.cancelUnconfirmed" = "L’autorizzazione precedente è ancora in sospeso. Completala o annullala prima di riprovare.";
+"account.serviceAllowsUse" = "Utilizzo consentito dal servizio.";

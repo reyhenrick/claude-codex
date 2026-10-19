@@ -232,7 +232,7 @@ export async function installService({ homeDirectory = homedir(), resourceDirect
   return { path, code: 'setup.service_ready', message: 'Serviço preparado. Conecte suas contas para começar.' };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+async function runSetupCommand() {
   process.umask(0o077);
   try {
     let input = ''; for await (const chunk of process.stdin) { input += chunk; if (input.length > 16384) throw new Error('Configuração muito grande.'); }
@@ -246,4 +246,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     if (!result) throw new Error('Ação desconhecida.');
     console.log(JSON.stringify({ ok: true, ...result }));
   } catch (error) { console.log(JSON.stringify({ ok: false, code: typeof error.code === 'string' && /^setup\.[a-z_]+$/.test(error.code) ? error.code : 'setup.failed', ...(error.migration ? { migration: error.migration } : {}), message: error.code ? 'Não foi possível concluir a preparação. Confira os caminhos e as permissões do aplicativo.' : error.message })); process.exitCode = 1; }
+}
+
+// Complete module evaluation before dispatching lifecycle commands. The lifecycle
+// module imports installService from this file, so a top-level await here would
+// leave that import cycle unsettled when this file is executed as the CLI.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  void runSetupCommand();
 }

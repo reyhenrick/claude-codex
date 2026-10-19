@@ -202,3 +202,4 @@
 "setup.previewUnavailable" = "This is a preview. Creating real installations is disabled.";
 
 "connection.cancelUnconfirmed" = "The previous authorization is still pending. Complete or cancel it before trying again.";
+"account.serviceAllowsUse" = "Use permitted by the service.";

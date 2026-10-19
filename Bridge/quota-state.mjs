@@ -16,8 +16,8 @@ function additionalModel(item) {
   // Unknown or contradictory names remain unscoped and apply conservatively.
   return scopes.length && scopes.every(scope => scope && scope === scopes[0]) ? scopes[0] : null;
 }
-const permits = group => group.valid && group.allowed && !group.reached && group.windows.every(window => window.used_percent < 100);
-const depleted = group => group.valid && (group.reached || group.windows.some(window => window.used_percent >= 100));
+const permits = group => group.valid && group.allowed && !group.reached;
+const depleted = group => group.valid && group.reached;
 const applicableGroups = (groups, baseModel) => groups.filter(group => group.base_model === null || group.base_model === baseModel);
 
 export function unknownQuota(reason = 'unknown') {
@@ -67,9 +67,10 @@ export function evaluateQuota(usage) {
   result.windows = main.windows;
   result.ordinary_allowed = main.allowed;
   result.remaining_percent = Math.max(0, 100 - Math.max(...main.windows.map(w => w.used_percent)));
-  // A negative operational result or rounded 100% alone is not proof of depleted subscription allowance.
+  // The displayed percentage is not an admission signal. The provider can keep
+  // subscription use available at 100%; explicit exhaustion still takes priority.
   if (main.reached) result.subscription_status = 'exhausted';
-  else if (main.allowed && result.remaining_percent > 0) result.subscription_status = 'available';
+  else if (main.allowed) result.subscription_status = 'available';
   const additions = usage.additional_rate_limits ?? [];
   if (!Array.isArray(additions)) return result;
   const groups = additions.map(item => {
@@ -82,8 +83,9 @@ export function evaluateQuota(usage) {
   // The account panel is a summary: one model-specific cap does not make every
   // current model unavailable. Inference must use quotaForModel for its choice.
   result.additional_allowed = baseModels.some(model => applicableGroups(groups, model.id).every(permits));
-  result.eligible = result.subscription_status === 'available' && result.additional_allowed && usage.spend_control?.reached !== true;
-  result.reason = result.eligible ? 'available' : result.subscription_status === 'exhausted' || result.remaining_percent === 0 ||
+  result.eligible = result.subscription_status === 'available' && result.additional_allowed &&
+    (usage.spend_control == null || usage.spend_control.reached === false);
+  result.reason = result.eligible ? 'available' : result.subscription_status === 'exhausted' ||
     !result.additional_allowed && groups.some(depleted) ? 'exhausted' : 'unknown';
   return result;
 }

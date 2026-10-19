@@ -207,6 +207,24 @@ final class AccountURLProtocol: URLProtocol, @unchecked Sendable {
         }
     }
     static func main() async throws {
+        var zeroMeterFixture = fixture()
+        var zeroMeterRow = (zeroMeterFixture["accounts"] as! [[String: Any]])[0]
+        zeroMeterRow["ordinary_allowed"] = true; zeroMeterRow["remaining_percent"] = 0
+        zeroMeterFixture["accounts"] = [zeroMeterRow]
+        var decodedZeroMeter = try snapshot(zeroMeterFixture).accounts[0]
+        expect(decodedZeroMeter.serviceAllowsAtDisplayedLimit,
+               "A zero meter must disclose the provider's continuing subscription permission")
+        zeroMeterRow["remaining_percent"] = 10; zeroMeterFixture["accounts"] = [zeroMeterRow]
+        decodedZeroMeter = try snapshot(zeroMeterFixture).accounts[0]
+        expect(!decodedZeroMeter.serviceAllowsAtDisplayedLimit, "Ordinary positive meters need no special note")
+        zeroMeterRow["remaining_percent"] = 0; zeroMeterRow["eligible"] = false; zeroMeterFixture["accounts"] = [zeroMeterRow]
+        decodedZeroMeter = try snapshot(zeroMeterFixture).accounts[0]
+        expect(!decodedZeroMeter.serviceAllowsAtDisplayedLimit, "Blocked accounts cannot claim permission")
+        zeroMeterRow["eligible"] = true; zeroMeterRow["subscription_status"] = "unknown"; zeroMeterFixture["accounts"] = [zeroMeterRow]
+        decodedZeroMeter = try snapshot(zeroMeterFixture).accounts[0]
+        expect(!decodedZeroMeter.serviceAllowsAtDisplayedLimit, "Unknown allowance cannot claim subscription permission")
+        let legacyAllowanceAccount = try snapshot(fixture()).accounts[0]
+        expect(!legacyAllowanceAccount.serviceAllowsAtDisplayedLimit, "Older snapshots without permission fields remain compatible")
         AccountURLProtocol.install { _ in try json(fixture()) }
         let stale = makeModel(); defer { stale.stop() }
         stale.snapshot = try snapshot(fixture(reason:"retry")); stale.applyReset(stale.snapshot!.accounts[0])

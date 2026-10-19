@@ -5,6 +5,7 @@ Claude Codex conecta suas contas do Codex a uma instalação separada do Claude 
 - Instalação a partir do Claude oficial, com aplicativo de abertura, configurações e dados próprios.
 - Conexão de contas pela autorização oficial da OpenAI, com cotas, renovações, créditos e resets informados pelo serviço.
 - Modo Automático com ordem de prioridade e modo Conta fixa. Mudanças de conta valem para a próxima chamada, preservando respostas já iniciadas.
+- A seleção de contas respeita a disponibilidade confirmada pelo serviço; o percentual de uso exibido não funciona como um bloqueio isolado.
 - GPT-6.1 Sol, GPT-6 Luna e GPT-6 Astra, com variantes Normal, Fast e Ultrafast conforme o modelo e o acesso das contas conectadas.
 - Controles nativos de esforço, contexto de 1 milhão e compactação com margem para ferramentas, respostas de agentes e resumo.
 - Mapeamento automático entre nomes reais e identificadores de compatibilidade, entregue também aos subagentes.

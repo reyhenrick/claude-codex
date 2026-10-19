@@ -120,9 +120,14 @@ struct Account: Decodable, Identifiable, Hashable {
     let activeRequests: Int?
     let subscriptionStatus: String
     let consumptionSource: String?
+    let ordinaryAllowed: Bool?
+    let remainingPercent: Double?
     let credits: AccountCredits
     let resets: AccountResets
     var id: String { email }
+    var serviceAllowsAtDisplayedLimit: Bool {
+        eligible && subscriptionStatus == "available" && ordinaryAllowed == true && remainingPercent == 0
+    }
     var status: String {
         switch reason {
         case "available": return L10n.text(consumptionSource == "credits" ? "account.creditsAvailable" : "account.available")

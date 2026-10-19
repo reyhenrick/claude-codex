@@ -52,6 +52,19 @@ test('fixed mode never uses its credits while another subscription is still avai
  f.values.set(emails[1], exhausted('0'));
  assert.deepEqual(await candidates(f), [{email:emails[0],source:'credits'}]);
 });
+test('server-permitted subscription use at 100 percent routes without opening paid admission', async () => {
+ const f=await fixture({credits:true});f.values.set(emails[0],exhausted('50'));f.values.set(emails[1],usage(100));
+ for(const model of ['claude-sonnet-5-5','anthropic.claude-sonnet-5-5','claude-haiku-5-5','anthropic.claude-haiku-5-5','claude-opus-5-5','anthropic.claude-opus-5-5']){
+  const selected=[];for await(const account of f.controller.candidates({model}))selected.push({email:account.email,source:account.consumption_source});
+  assert.deepEqual(selected,[{email:emails[1],source:'subscription'}]);
+ }
+ const status=await f.controller.status();assert.equal(status.accounts[1].eligible,true);
+ assert.equal(status.accounts[1].remaining_percent,0);assert.equal(status.accounts[1].consumption_source,'subscription');
+ assert.equal(status.credit_phase,false);assert.equal(status.credit_block_reason,'subscriptions_available');
+ await f.controller.update({revision:0,mode:'fixed',fixed_email:emails[0]});
+ assert.deepEqual(await candidates(f),[],'a fixed exhausted account must still wait for the other subscription');
+ assert.equal(f.consumed.length,0);
+});
 test('unknown allowance, disabled connection and an additional model cap cannot open paid admission', async () => {
  const f = await fixture({credits:true});f.values.set(emails[0],exhausted('50'));
  f.values.set(emails[1],new Error('offline'));assert.deepEqual(await candidates(f),[]);

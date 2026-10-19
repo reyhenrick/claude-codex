@@ -102,7 +102,7 @@ A migração escreve apenas nos destinos novos. Arquivos ilegíveis, formatos in
 
 ## Limites, créditos e troca de conta
 
-Antes de admitir uma inferência, o serviço consulta o uso. Uma cota desconhecida ou uma consulta inválida impede o uso daquela conta. Um limite adicional identificado como exclusivo de um modelo é aplicado somente a esse modelo; limites de escopo desconhecido continuam conservadores. No modo automático, as assinaturas seguem a ordem escolhida. No modo fixo, o gerenciador não passa para outra conta.
+Antes de admitir uma inferência, o serviço consulta o uso. Uma cota desconhecida ou uma consulta inválida impede o uso daquela conta. A permissão explícita de uso e o sinal de limite atingido informados pelo fornecedor orientam a admissão; um indicador em 100% não bloqueia sozinho uma conta cujo uso continua permitido. O percentual permanece visível, com uma indicação de que o serviço autoriza o uso. Um limite adicional identificado como exclusivo de um modelo é aplicado somente a esse modelo; limites de escopo desconhecido continuam conservadores. No modo automático, as assinaturas seguem a ordem escolhida. No modo fixo, o gerenciador não passa para outra conta.
 
 A troca vale para a próxima chamada ao modelo de cada conversa. Ela pode ocorrer após uma ferramenta, ainda durante a resposta à mesma mensagem. A chamada em andamento termina na conta em que começou. O serviço encaminha o histórico e os resultados de ferramentas necessários à continuação; não transfere uma resposta parcialmente recebida.
 

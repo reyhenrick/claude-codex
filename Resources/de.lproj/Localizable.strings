@@ -202,3 +202,4 @@
 "setup.previewUnavailable" = "Dies ist eine Vorschau. Das Erstellen echter Installationen ist deaktiviert.";
 
 "connection.cancelUnconfirmed" = "Die vorherige Autorisierung ist noch offen. Schließe sie ab oder brich sie ab, bevor du es erneut versuchst.";
+"account.serviceAllowsUse" = "Nutzung vom Dienst erlaubt.";
