@@ -19,7 +19,7 @@ macOS 26 ou posterior · Apple silicon e Intel · Gratuito e de código aberto
 Requer uma conta com acesso ao Codex e o app oficial do Claude instalado. O uso dos modelos segue os limites e a cobrança da sua conta.
 
 <p align="center">
-  <img src="../assets/panel-pt.png" width="404" alt="Painel do Claude Codex no modo automático com duas contas de exemplo, cotas de assinatura, créditos e controles de reset">
+  <img src="../assets/panel-pt.png" width="420" alt="Painel do Claude Codex no modo automático com duas contas de exemplo, cotas de assinatura, créditos e controles de reset">
   <br><sub>Captura de tela do app em execução, com contas e dados de uso sintéticos.</sub>
 </p>
 

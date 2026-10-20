@@ -19,7 +19,7 @@ macOS 26 or later · Apple silicon and Intel · Free and open source
 Requires an account with Codex access and the official Claude app installed. Model usage follows your account’s limits and billing.
 
 <p align="center">
-  <img src="docs/assets/panel-en.png" width="404" alt="Claude Codex menu-bar panel in automatic mode with two example accounts, subscription limits, credits and reset controls">
+  <img src="docs/assets/panel-en.png" width="420" alt="Claude Codex menu-bar panel in automatic mode with two example accounts, subscription limits, credits and reset controls">
   <br><sub>Screenshot of the running app with synthetic accounts and usage data.</sub>
 </p>
 

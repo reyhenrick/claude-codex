@@ -19,7 +19,7 @@ macOS 26 oder neuer · Apple silicon und Intel · Kostenlos und Open Source
 Erfordert ein Konto mit Codex-Zugang und die installierte offizielle Claude-App. Für die Modellnutzung gelten die Limits und Abrechnungsregeln Ihres Kontos.
 
 <p align="center">
-  <img src="../assets/panel-de.png" width="404" alt="Claude-Codex-Panel im automatischen Modus mit zwei Beispielkonten, Abonnementlimits, Credits und Optionen zum Zurücksetzen">
+  <img src="../assets/panel-de.png" width="420" alt="Claude-Codex-Panel im automatischen Modus mit zwei Beispielkonten, Abonnementlimits, Credits und Optionen zum Zurücksetzen">
   <br><sub>Screenshot der laufenden App mit fiktiven Konten und Nutzungsdaten.</sub>
 </p>
 

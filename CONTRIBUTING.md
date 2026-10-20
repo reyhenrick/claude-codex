@@ -36,13 +36,13 @@ Take a real screenshot of the app’s window, using the operating system’s win
 
 The fixture accepts account reads and refreshes and rejects all account-changing requests. The app’s staging mode skips the production service and updater and disables real installation setup. No account files or credentials are copied. The script records its process IDs and stops only its own processes when the documentation app closes. Do not connect a real account or enable login startup in this documentation instance.
 
-With all six original captures in one folder, crop their outer frame using Python and Pillow:
+With all six original captures in one folder, remove only the exterior corner background using Python and Pillow:
 
 ```sh
 python3 Scripts/crop-readme-screenshots.py /path/to/original-captures
 ```
 
-The crop removes 16 pixels from each edge of the 840 × 1300 window captures, preserving every remaining pixel and saving 808 × 1268 PNGs in `docs/assets/`. The script checks the input sizes and verifies the output pixels. Check each screenshot at its README display size, including long translations and both GitHub page backgrounds. Confirm that the accounts are synthetic and that images, captions and relative links resolve in every language. The fixture deliberately uses fixed illustrative dates and amounts.
+The script preserves the full 840 × 1300 window capture and every RGB pixel. It follows the neutral exterior background connected to the four corners and changes only its alpha channel, retaining the native rounded frame. No rectangular inset, resizing, color adjustment or redrawing is applied. The PNGs in `docs/assets/` keep an opaque interior and transparent exterior corners; these properties are verified when saving. Check each screenshot at its README display size, including long translations and both GitHub page backgrounds. Confirm that the accounts are synthetic and that images, captions and relative links resolve in every language. The fixture deliberately uses fixed illustrative dates and amounts.
 
 ## Keep changes focused
 

@@ -19,7 +19,7 @@ macOS 26 ou ultérieur · Apple silicon et Intel · Gratuit et open source
 Nécessite un compte ayant accès à Codex et l’application officielle Claude installée. L’utilisation des modèles est soumise aux limites et à la facturation de votre compte.
 
 <p align="center">
-  <img src="../assets/panel-fr.png" width="404" alt="Panneau Claude Codex en mode automatique avec deux comptes fictifs, leurs quotas, crédits et commandes de réinitialisation">
+  <img src="../assets/panel-fr.png" width="420" alt="Panneau Claude Codex en mode automatique avec deux comptes fictifs, leurs quotas, crédits et commandes de réinitialisation">
   <br><sub>Capture d’écran de l’application en cours d’exécution avec des comptes et données d’utilisation fictifs.</sub>
 </p>
 

@@ -19,7 +19,7 @@ macOS 26 o successivo · Apple silicon e Intel · Gratuito e open source
 Richiede un account con accesso a Codex e l’app ufficiale di Claude installata. L’uso dei modelli segue i limiti e le regole di fatturazione del tuo account.
 
 <p align="center">
-  <img src="../assets/panel-it.png" width="404" alt="Pannello di Claude Codex in modalità automatica con due account di esempio, quote degli abbonamenti, crediti e comandi di reset">
+  <img src="../assets/panel-it.png" width="420" alt="Pannello di Claude Codex in modalità automatica con due account di esempio, quote degli abbonamenti, crediti e comandi di reset">
   <br><sub>Screenshot dell’app in esecuzione con account e dati di utilizzo fittizi.</sub>
 </p>
 
