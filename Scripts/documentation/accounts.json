@@ -1,0 +1,41 @@
+{
+  "mode": "automatic",
+  "priority_order": ["alex@example.com", "sam@example.com"],
+  "revision": 1,
+  "next_eligible_account": "alex@example.com",
+  "active_requests": 1,
+  "allow_extra_credits": false,
+  "auto_reset_emails": [],
+  "auto_reset_threshold_percent": 5,
+  "credit_phase": false,
+  "credit_block_reason": "disabled",
+  "last_used": {"email": "alex@example.com", "at": "2026-10-19T15:00:00Z"},
+  "accounts": [
+    {
+      "email": "alex@example.com", "plan": "pro", "connected": true,
+      "eligible": true, "reason": "available", "subscription_status": "available",
+      "consumption_source": "subscription", "ordinary_allowed": true,
+      "remaining_percent": 64, "active_requests": 1,
+      "windows": [
+        {"name": "", "used_percent": 16, "window_seconds": 18000, "reset_at": 1792432800},
+        {"name": "", "used_percent": 36, "window_seconds": 604800, "reset_at": 1792778400}
+      ],
+      "credits": {"known": true, "has_credits": true, "unlimited": false, "balance": "1200", "eligible": false},
+      "resets": {"known": true, "available_count": 3, "applicable_count": 0, "can_apply": false,
+        "reason": "not_eligible", "auto_enabled": false, "threshold_percent": 5}
+    },
+    {
+      "email": "sam@example.com", "plan": "pro", "connected": true,
+      "eligible": true, "reason": "available", "subscription_status": "available",
+      "consumption_source": "subscription", "ordinary_allowed": true,
+      "remaining_percent": 28, "active_requests": 0,
+      "windows": [
+        {"name": "", "used_percent": 72, "window_seconds": 18000, "reset_at": 1792436400},
+        {"name": "", "used_percent": 51, "window_seconds": 604800, "reset_at": 1792692000}
+      ],
+      "credits": {"known": true, "has_credits": false, "unlimited": false, "balance": "0", "eligible": false},
+      "resets": {"known": true, "available_count": 1, "applicable_count": 0, "can_apply": false,
+        "reason": "not_eligible", "auto_enabled": false, "threshold_percent": 5}
+    }
+  ]
+}
