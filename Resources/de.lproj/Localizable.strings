@@ -36,7 +36,6 @@
 "action.enableAutoReset" = "Automatik aktivieren";
 "action.restoreConnection" = "Verbindung wiederherstellen";
 "action.quit" = "App beenden";
-"action.refresh" = "Limits, Credits und Zurücksetzungen aktualisieren";
 "action.retry" = "Erneut versuchen";
 "action.setupClaude" = "Neue Claude-Installation…";
 "action.showFinder" = "Im Finder anzeigen";
@@ -89,7 +88,6 @@
 "mode.automaticDescription" = "Priorisiert Abos in der folgenden Reihenfolge.";
 "mode.fixed" = "Festes Konto";
 "mode.fixedDescription" = "Verwendet nur das gewählte Konto gemäß der folgenden Credit-Regel.";
-"panel.admissionNotice" = "Wechsel bei der nächsten Iteration. Laufende Anfragen behalten ihr Konto und können beim Überschreiten des Limits Credits nutzen; diese Einstellung blockiert neue Anfragen.";
 "panel.applying" = "Änderung wird angewendet";
 "panel.loading" = "Konten werden geprüft…";
 "panel.mode" = "Nutzungsmodus";
@@ -203,3 +201,21 @@
 
 "connection.cancelUnconfirmed" = "Die vorherige Autorisierung ist noch offen. Schließe sie ab oder brich sie ab, bevor du es erneut versuchst.";
 "account.serviceAllowsUse" = "Nutzung vom Dienst erlaubt.";
+"menuBar.unavailable" = "Das verbleibende Kontingent ist nicht verfügbar.";
+"menuBar.multipleActive" = "{0} Konten sind aktiv; dieses Kontingent gehört zum angezeigten Konto.";
+"menuBar.checkedAt" = "Kontingent geprüft: {0}";
+"tokens.title" = "Tokens";
+"tokens.period" = "Zeitraum des Tokenverbrauchs";
+"tokens.today" = "Heute";
+"tokens.accumulated" = "Gesamt";
+"tokens.total" = "insgesamt";
+"tokens.input" = "Eingabe";
+"tokens.output" = "Ausgabe";
+"tokens.cache" = "Cache";
+"tokens.inputHelp" = "Eingabetokens ohne Cache.";
+"tokens.outputHelp" = "Ausgabetokens einschließlich der vom Dienst gemeldeten Denktokens.";
+"tokens.cacheHelp" = "Gelesen: {0} · Geschrieben: {1}. Cache wird getrennt von Eingabe gezählt.";
+"tokens.since" = "Seit {0}";
+"tokens.unreported" = "{0} Anfragen haben keinen Tokenverbrauch gemeldet; diese Summen sind unvollständig.";
+"tokens.notSaved" = "Der Tokenverlauf konnte nicht gespeichert werden.";
+"tokens.unavailable" = "Der Tokenverbrauch ist nicht verfügbar.";

@@ -44,8 +44,8 @@ final class AccountsModel: ObservableObject {
     @Published var snapshot: PoolSnapshot?
     @Published var queryError: String?
     @Published var actionError: String?
-    @Published var refreshing = false
-    @Published var applying = false
+    @Published var refreshing = false { didSet { if !refreshing { refreshInvalidatedSnapshot() } } }
+    @Published var applying = false { didSet { if !applying { refreshInvalidatedSnapshot() } } }
     @Published var showingConnectionForm = false
     @Published var connectionEmail = ""
     @Published var confirmation: AccountConfirmation?
@@ -59,8 +59,13 @@ final class AccountsModel: ObservableObject {
     private var loginURL: URL?
     private var loginEmail: String?
     private var polling: Task<Void, Never>?
+    private var updates: Task<Void, Never>?
+    private var updateLoad: Task<Void, Never>?
+    private var snapshotInvalidated = false
+    private var stopped = false
     private let isStaging: Bool
     private let session: URLSession
+    private let eventSession: URLSession
     private let openURL: (URL) -> Bool
     private let setupExecutor: ([String: Any]) async throws -> SetupResult
     private let expectedServiceBuild: String?
@@ -68,6 +73,7 @@ final class AccountsModel: ObservableObject {
     let baseURL: URL
 
     init(staging: Bool = false, session suppliedSession: URLSession? = nil,
+         eventSession suppliedEventSession: URLSession? = nil,
          expectedServiceBuild: String? = ServiceReadiness.expectedBuild,
          setupExecutor suppliedSetup: (([String: Any]) async throws -> SetupResult)? = nil,
          openURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }) {
@@ -82,9 +88,21 @@ final class AccountsModel: ObservableObject {
         config.timeoutIntervalForRequest = 45
         config.timeoutIntervalForResource = 60
         session = suppliedSession ?? URLSession(configuration: config)
+        let eventsConfig = suppliedSession?.configuration ?? URLSessionConfiguration.ephemeral
+        eventsConfig.timeoutIntervalForRequest = 45
+        eventsConfig.timeoutIntervalForResource = 24 * 60 * 60
+        eventSession = suppliedEventSession ?? URLSession(configuration: eventsConfig)
     }
     func start() {
-        guard polling == nil else { return }
+        guard polling == nil, !stopped else { return }
+        updates = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, !self.stopped else { return }
+                do { try await self.consumeUpdates() } catch {}
+                guard !Task.isCancelled, !self.stopped else { return }
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
         polling = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -97,7 +115,62 @@ final class AccountsModel: ObservableObject {
             }
         }
     }
-    func stop() { polling?.cancel(); polling = nil; session.invalidateAndCancel() }
+    func stop() {
+        stopped = true; snapshotInvalidated = false
+        polling?.cancel(); polling = nil
+        updates?.cancel(); updates = nil
+        updateLoad?.cancel(); updateLoad = nil
+        session.invalidateAndCancel(); eventSession.invalidateAndCancel()
+    }
+
+    private func consumeUpdates() async throws {
+        var request = URLRequest(url: baseURL.appendingPathComponent("_bridge/events"))
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        if !isStaging { try BridgeAuthorization.apply(to: &request) }
+        let (bytes, response) = try await eventSession.bytes(for: request)
+        defer { bytes.task.cancel() }
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+              response.value(forHTTPHeaderField: "Content-Type")?.split(separator: ";").first?.trimmingCharacters(in: .whitespaces).lowercased() == "text/event-stream" else {
+            throw URLError(.badServerResponse)
+        }
+        var event = ""
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            guard line.utf8.count <= 4096 else { throw URLError(.cannotDecodeRawData) }
+            if line.isEmpty { event = ""; continue }
+            if line.hasPrefix(":") { continue }
+            let fields = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard fields.count == 2 else { continue }
+            let value = fields[1].trimmingCharacters(in: .whitespaces)
+            if fields[0] == "event" { event = value }
+            else if fields[0] == "data" {
+                if event == "changed", let data = value.data(using: .utf8),
+                   let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any], payload.isEmpty {
+                    serviceDidChange()
+                }
+                event = ""
+            }
+        }
+    }
+
+    func serviceDidChange() {
+        guard !stopped else { return }
+        snapshotInvalidated = true
+        refreshInvalidatedSnapshot()
+    }
+
+    private func refreshInvalidatedSnapshot() {
+        guard snapshotInvalidated, !refreshing, !applying, updateLoad == nil, !stopped else { return }
+        updateLoad = Task { [weak self] in
+            await Task.yield()
+            guard let self else { return }
+            defer { self.updateLoad = nil; self.refreshInvalidatedSnapshot() }
+            guard !Task.isCancelled, !self.stopped, !self.refreshing, !self.applying else { return }
+            self.snapshotInvalidated = false
+            await self.load(refreshNewAccounts: false)
+        }
+    }
 
     private func call<T: Decodable>(_ path: String, body: [String: Any]? = nil) async throws -> T {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
@@ -149,6 +222,7 @@ final class AccountsModel: ObservableObject {
             queryError = nil
             return true
         } catch is CancellationError { return false } catch {
+            if Task.isCancelled || stopped { return false }
             queryError = userMessage(error)
             return false
         }

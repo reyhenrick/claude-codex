@@ -36,7 +36,6 @@
 "action.enableAutoReset" = "Activer l’automatisation";
 "action.restoreConnection" = "Rétablir la connexion";
 "action.quit" = "Quitter l’application";
-"action.refresh" = "Actualiser limites, crédits et réinitialisations";
 "action.retry" = "Réessayer";
 "action.setupClaude" = "Nouvelle installation de Claude…";
 "action.showFinder" = "Afficher dans le Finder";
@@ -89,7 +88,6 @@
 "mode.automaticDescription" = "Donne priorité aux abonnements dans l’ordre ci-dessous.";
 "mode.fixed" = "Compte fixe";
 "mode.fixedDescription" = "Utilise uniquement le compte sélectionné, selon la règle de crédits ci-dessous.";
-"panel.admissionNotice" = "Le changement s’applique à l’itération suivante. Une requête en cours garde son compte et peut consommer des crédits au-delà du quota ; ce contrôle bloque les nouvelles requêtes.";
 "panel.applying" = "Application de la modification";
 "panel.loading" = "Vérification des comptes…";
 "panel.mode" = "Mode d’utilisation";
@@ -203,3 +201,21 @@
 
 "connection.cancelUnconfirmed" = "L’autorisation précédente est toujours en attente. Terminez-la ou annulez-la avant de réessayer.";
 "account.serviceAllowsUse" = "Utilisation autorisée par le service.";
+"menuBar.unavailable" = "Le quota restant est indisponible.";
+"menuBar.multipleActive" = "{0} comptes sont actifs ; ce quota correspond au compte affiché.";
+"menuBar.checkedAt" = "Quota vérifié le {0}";
+"tokens.title" = "Tokens";
+"tokens.period" = "Période de consommation des tokens";
+"tokens.today" = "Aujourd’hui";
+"tokens.accumulated" = "Cumul";
+"tokens.total" = "au total";
+"tokens.input" = "Entrée";
+"tokens.output" = "Sortie";
+"tokens.cache" = "Cache";
+"tokens.inputHelp" = "Tokens d’entrée hors cache.";
+"tokens.outputHelp" = "Tokens de sortie, y compris le raisonnement indiqué par le service.";
+"tokens.cacheHelp" = "Lecture : {0} · Écriture : {1}. Le cache est distinct de l’entrée.";
+"tokens.since" = "Depuis le {0}";
+"tokens.unreported" = "{0} requêtes n’ont pas indiqué leur consommation de tokens ; ces totaux sont partiels.";
+"tokens.notSaved" = "L’historique des tokens n’a pas pu être enregistré.";
+"tokens.unavailable" = "La consommation de tokens est indisponible.";

@@ -4,6 +4,9 @@ struct AccountsPanel: View {
     @ObservedObject var model: AccountsModel
     @ObservedObject var updater: AppUpdater
     var onQuit: () -> Void
+    var onContentSizeChange: (_ additionalAccountHeight: CGFloat) -> Void = { _ in }
+    @State private var accountContentHeight: CGFloat = 0
+    @State private var accountRowHeights: [String: CGFloat] = [:]
     static let cornerRadius: CGFloat = 22
 
     var body: some View {
@@ -27,8 +30,15 @@ struct AccountsPanel: View {
             }
         }
         .padding(16)
-        .frame(width: 420, height: model.showingConnectionForm ? 340 : 650)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in reportContentSizeChange() }
+        .frame(minWidth: 420, maxWidth: .infinity,
+               minHeight: model.showingConnectionForm ? 340 : nil, maxHeight: .infinity, alignment: .topLeading)
         .glassEffect(.regular, in: .rect(cornerRadius: Self.cornerRadius))
+        .onChange(of: model.snapshot?.accounts.map(\.email)) { _, emails in
+            let current = Set(emails ?? [])
+            accountRowHeights = accountRowHeights.filter { current.contains($0.key) }
+            reportContentSizeChange()
+        }
         .alert(model.confirmation?.title ?? L10n.text("confirm.defaultTitle"), isPresented: Binding(
             get: { model.confirmation != nil },
             set: { if !$0 { model.confirmation = nil } }
@@ -48,12 +58,9 @@ struct AccountsPanel: View {
                 Text(L10n.text("panel.subtitle")).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if model.refreshing || model.applying || model.preparingService {
+            if model.applying || model.preparingService {
                 ProgressView().controlSize(.small).accessibilityLabel(model.applying ? L10n.text("panel.applying") : L10n.text("panel.refreshing"))
             }
-            Button { Task { await model.load(refresh: true) } } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.borderless).help(L10n.text("action.refresh")).accessibilityLabel(L10n.text("action.refresh"))
-                .disabled(model.applying || model.refreshing)
         }
     }
     @ViewBuilder private var mainContent: some View {
@@ -76,21 +83,35 @@ struct AccountsPanel: View {
                 if let requests = snapshot.activeRequests, requests > 0 { Text(L10n.text("accounts.activeRequests", String(requests))) }
             }.font(.caption2).foregroundStyle(.secondary)
             ScrollView {
-                LazyVStack(spacing: 0) {
+                VStack(spacing: 0) {
                     ForEach(Array(snapshot.accounts.enumerated()), id: \.element.id) { index, account in
                         AccountRow(account: account, index: index, count: snapshot.accounts.count,
                             selected: (snapshot.mode == "fixed" ? snapshot.fixedEmail : snapshot.nextEligibleAccount) == account.email,
                             fixed: snapshot.mode == "fixed", model: model)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .onGeometryChange(for: CGFloat.self) { ceil($0.size.height) } action: { height in
+                                guard height.isFinite, height > 0, height != accountRowHeights[account.email] else { return }
+                                accountRowHeights[account.email] = height
+                                reportContentSizeChange()
+                            }
                         if index < snapshot.accounts.count - 1 { Divider().padding(.vertical, 10) }
                     }
                     if snapshot.accounts.isEmpty {
                         ContentUnavailableView(L10n.text("accounts.empty"), systemImage: "person.crop.circle.badge.plus", description: Text(L10n.text("accounts.emptyDescription")))
                     }
                 }.padding(.vertical, 4).padding(.horizontal, 1)
-            }.frame(minHeight: 100)
+                    .onGeometryChange(for: CGFloat.self) { ceil($0.size.height) } action: { height in
+                        guard height.isFinite, height > 0, height != accountContentHeight else { return }
+                        accountContentHeight = height
+                        reportContentSizeChange()
+                    }
+            }.frame(minHeight: minimumAccountHeight,
+                    idealHeight: max(minimumAccountHeight, accountContentHeight))
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { _ in reportContentSizeChange() }
             if let used = snapshot.lastUsed {
                 Text(L10n.text("accounts.lastUsed", used.email)).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
+            TokenUsageView(usage: snapshot.tokenUsage, unavailable: model.queryError != nil || model.maintenancePending)
         } else {
             Spacer()
             if model.queryError != nil || model.actionError != nil {
@@ -103,6 +124,17 @@ struct AccountsPanel: View {
             }
             Spacer()
         }
+    }
+    private var minimumAccountHeight: CGFloat {
+        guard let email = model.snapshot?.accounts.first?.email, let height = accountRowHeights[email] else { return accountContentHeight }
+        return height + 8
+    }
+    private func reportContentSizeChange() {
+        guard !model.showingConnectionForm, model.snapshot?.accounts.isEmpty == false else {
+            onContentSizeChange(0)
+            return
+        }
+        onContentSizeChange(max(0, accountContentHeight - minimumAccountHeight))
     }
     private func creditsPolicy(_ snapshot: PoolSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -208,9 +240,6 @@ struct AccountsPanel: View {
                 } label: { Image(systemName: "gearshape") }
                 .menuStyle(.borderlessButton).fixedSize().accessibilityLabel(L10n.text("settings.title"))
             }
-            Text(L10n.text("panel.admissionNotice"))
-                .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

@@ -36,7 +36,6 @@
 "action.enableAutoReset" = "Ativar automático";
 "action.restoreConnection" = "Restabelecer conexão";
 "action.quit" = "Sair do app";
-"action.refresh" = "Atualizar limites, créditos e resets";
 "action.retry" = "Tentar novamente";
 "action.setupClaude" = "Nova instalação do Claude…";
 "action.showFinder" = "Mostrar no Finder";
@@ -89,7 +88,6 @@
 "mode.automaticDescription" = "Prioriza as assinaturas na ordem abaixo.";
 "mode.fixed" = "Conta fixa";
 "mode.fixedDescription" = "Usa somente a conta marcada, respeitando a regra de créditos abaixo.";
-"panel.admissionNotice" = "Troca na próxima iteração. A solicitação em curso mantém a conta e pode consumir créditos ao cruzar a cota; o controle bloqueia novas solicitações.";
 "panel.applying" = "Aplicando alteração";
 "panel.loading" = "Consultando as contas…";
 "panel.mode" = "Modo de consumo";
@@ -203,3 +201,21 @@
 
 "connection.cancelUnconfirmed" = "A autorização anterior ainda está pendente. Conclua ou cancele essa autorização antes de tentar novamente.";
 "account.serviceAllowsUse" = "Uso permitido pelo serviço.";
+"menuBar.unavailable" = "A cota restante está indisponível.";
+"menuBar.multipleActive" = "{0} contas estão ativas; esta cota pertence à conta exibida.";
+"menuBar.checkedAt" = "Cota consultada em {0}";
+"tokens.title" = "Tokens";
+"tokens.period" = "Período do consumo de tokens";
+"tokens.today" = "Hoje";
+"tokens.accumulated" = "Acumulado";
+"tokens.total" = "no total";
+"tokens.input" = "Entrada";
+"tokens.output" = "Saída";
+"tokens.cache" = "Cache";
+"tokens.inputHelp" = "Tokens de entrada sem cache.";
+"tokens.outputHelp" = "Tokens de saída, incluindo o raciocínio informado pelo serviço.";
+"tokens.cacheHelp" = "Leitura: {0} · Gravação: {1}. O cache é separado da entrada.";
+"tokens.since" = "Desde {0}";
+"tokens.unreported" = "{0} solicitações não informaram o consumo de tokens; estes totais são parciais.";
+"tokens.notSaved" = "Não foi possível salvar o histórico de tokens.";
+"tokens.unavailable" = "O consumo de tokens está indisponível.";

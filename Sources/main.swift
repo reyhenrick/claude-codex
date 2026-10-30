@@ -7,29 +7,42 @@ final class AccountsPanelWindow: NSPanel {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let model = AccountsModel(staging: CommandLine.arguments.contains("--staging"))
     private let updater = AppUpdater()
-    private var host: NSView?
+    private var host: NSHostingController<AccountsPanel>?
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var subscription: AnyCancellable?
     private var startupTask: Task<Void, Never>?
     private var preview: NSWindow?
     private var setupWindow: NSWindow?
+    private var panelSize = PanelSizeState()
+    private var additionalAccountHeight: CGFloat = 0
+    private var layingOutPanel = false
     private let setupModel = SetupModel(staging: CommandLine.arguments.contains("--staging"))
     private lazy var panel: AccountsPanelWindow = {
-        let window = AccountsPanelWindow(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        let window = AccountsPanelWindow(contentRect: .zero, styleMask: [.borderless, .resizable, .nonactivatingPanel], backing: .buffered, defer: false)
         window.isFloatingPanel = true; window.level = .statusBar
+        window.delegate = self; window.isRestorable = false
         window.backgroundColor = .clear; window.isOpaque = false; window.hasShadow = true
         window.hidesOnDeactivate = false; window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let hosting = NSHostingView(rootView: AccountsPanel(model: model, updater: updater, onQuit: { NSApp.terminate(nil) }))
-        hosting.translatesAutoresizingMaskIntoConstraints = false
+        let hosting = NSHostingController(rootView: AccountsPanel(model: model, updater: updater, onQuit: { NSApp.terminate(nil) },
+            onContentSizeChange: { [weak self] height in
+                self?.additionalAccountHeight = height
+                Task { @MainActor [weak self] in
+                    await Task.yield()
+                    guard let self, self.panel.isVisible else { return }
+                    self.layoutPanel()
+                }
+            }))
+        hosting.sizingOptions = [.intrinsicContentSize]
+        hosting.view.translatesAutoresizingMaskIntoConstraints = false
         let container = NSView(); container.wantsLayer = true
         container.layer?.cornerRadius = AccountsPanel.cornerRadius; container.layer?.cornerCurve = .continuous; container.layer?.masksToBounds = true
-        container.addSubview(hosting)
-        NSLayoutConstraint.activate([hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor), hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor), hosting.topAnchor.constraint(equalTo: container.topAnchor), hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor)])
+        container.addSubview(hosting.view)
+        NSLayoutConstraint.activate([hosting.view.leadingAnchor.constraint(equalTo: container.leadingAnchor), hosting.view.trailingAnchor.constraint(equalTo: container.trailingAnchor), hosting.view.topAnchor.constraint(equalTo: container.topAnchor), hosting.view.bottomAnchor.constraint(equalTo: container.bottomAnchor)])
         window.contentView = container; host = hosting
         window.title = "Claude Codex"
         return window
@@ -38,15 +51,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem.button {
             let icon = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Claude Codex")
             icon?.isTemplate = true; button.image = icon
+            button.imagePosition = .imageLeading
+            button.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             button.target = self; button.action = #selector(togglePanel)
             button.setAccessibilityLabel("Claude Codex")
         }
+        updateStatusItem()
         subscription = model.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in
                 await Task.yield()
                 guard let self else { return }
-                self.statusItem.button?.toolTip = "Claude Codex" + (self.model.snapshot?.nextEligibleAccount.map { ": \($0)" } ?? "")
-                if self.panel.isVisible { self.layoutPanel() }
+                self.updateStatusItem()
+                if self.panel.isVisible && !self.panel.inLiveResize { self.layoutPanel() }
             }
         }
         NotificationCenter.default.addObserver(self, selector: #selector(showSetup), name: Notification.Name("ShowClaudeSetup"), object: nil)
@@ -88,6 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
     }
+    private func updateStatusItem() {
+        let presentation = MenuBarQuotaPresentation(snapshot: model.snapshot, unavailable: model.queryError != nil || model.maintenancePending)
+        statusItem.button?.title = " " + presentation.title
+        statusItem.button?.toolTip = presentation.tooltip
+        statusItem.button?.setAccessibilityLabel(presentation.tooltip)
+    }
     @objc private func togglePanel() {
         guard model.confirmation == nil else { return }
         panel.isVisible ? hidePanel() : showPanel()
@@ -109,15 +131,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor); self.globalMonitor = nil }
     }
     private func layoutPanel() {
-        guard let button = statusItem.button, let window = button.window else { return }
+        guard !panel.inLiveResize else { return }
+        guard let button = statusItem.button, let window = button.window, let host else { return }
+        layingOutPanel = true
+        defer { layingOutPanel = false }
         let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
         panel.layoutIfNeeded()
-        let size = NSSize(width: 420, height: model.showingConnectionForm ? 340 : 650)
-        panel.setContentSize(size)
         let visible = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+        let maximum = NSSize(width: max(1, visible.width - 16), height: max(1, visible.height - 16))
+        let width = panelSize.width(connection: model.showingConnectionForm, maximum: maximum.width)
+        let fitting = host.sizeThatFits(in: NSSize(width: width, height: 0))
+        let minimum = PanelSizeState.minimum(fittingHeight: fitting.height)
+        let size = panelSize.size(connection: model.showingConnectionForm, maximum: maximum,
+                                  minimumHeight: minimum.height, idealHeight: fitting.height + additionalAccountHeight)
+        panel.contentMinSize = NSSize(width: min(maximum.width, minimum.width), height: min(maximum.height, minimum.height))
+        panel.contentMaxSize = maximum
+        if panel.contentRect(forFrameRect: panel.frame).size != size { panel.setContentSize(size) }
         let x = min(max(anchor.midX - size.width / 2, visible.minX + 8), visible.maxX - size.width - 8)
         let y = max(visible.minY + 8, anchor.minY - 6 - size.height)
         panel.setFrameOrigin(NSPoint(x: x, y: y)); panel.invalidateShadow()
+    }
+    func windowDidEndLiveResize(_ notification: Notification) {
+        guard let resized = notification.object as? NSWindow, resized === panel, !layingOutPanel else { return }
+        panelSize.remember(panel.contentRect(forFrameRect: panel.frame).size, connection: model.showingConnectionForm)
+        layoutPanel()
     }
     @objc private func showSetup() {
         hidePanel()
@@ -128,9 +165,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupWindow = window; window.center(); NSApp.activate(); window.makeKeyAndOrderFront(nil)
     }
     private func showPreview() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 650), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isRestorable = false
         window.title = "Claude Codex"
-        window.contentViewController = NSHostingController(rootView: AccountsPanel(model: model, updater: updater, onQuit: { NSApp.terminate(nil) }))
+        let hosting = NSHostingController(rootView: AccountsPanel(model: model, updater: updater, onQuit: { NSApp.terminate(nil) }))
+        window.contentViewController = hosting
+        window.contentMinSize = PanelSizeState.minimum(fittingHeight: hosting.sizeThatFits(in: CGSize(width: 420, height: 0)).height)
         window.isReleasedWhenClosed = false; preview = window; window.center()
         NSApp.setActivationPolicy(.regular); NSApp.activate(); window.makeKeyAndOrderFront(nil)
     }

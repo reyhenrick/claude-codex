@@ -36,7 +36,6 @@
 "action.enableAutoReset" = "Enable automatic resets";
 "action.restoreConnection" = "Restore connection";
 "action.quit" = "Quit app";
-"action.refresh" = "Refresh limits, credits and resets";
 "action.retry" = "Try again";
 "action.setupClaude" = "New Claude installation…";
 "action.showFinder" = "Show in Finder";
@@ -89,7 +88,6 @@
 "mode.automaticDescription" = "Prioritizes subscriptions in the order below.";
 "mode.fixed" = "Fixed account";
 "mode.fixedDescription" = "Uses only the selected account, following the credit policy below.";
-"panel.admissionNotice" = "Switches on the next iteration. An ongoing request keeps its account and may use credits when crossing the limit; this control blocks new requests.";
 "panel.applying" = "Applying change";
 "panel.loading" = "Checking accounts…";
 "panel.mode" = "Usage mode";
@@ -203,3 +201,21 @@
 
 "connection.cancelUnconfirmed" = "The previous authorization is still pending. Complete or cancel it before trying again.";
 "account.serviceAllowsUse" = "Use permitted by the service.";
+"menuBar.unavailable" = "Remaining quota is unavailable.";
+"menuBar.multipleActive" = "{0} accounts are active; this quota belongs to the account shown.";
+"menuBar.checkedAt" = "Quota checked {0}";
+"tokens.title" = "Tokens";
+"tokens.period" = "Token usage period";
+"tokens.today" = "Today";
+"tokens.accumulated" = "Accumulated";
+"tokens.total" = "total";
+"tokens.input" = "Input";
+"tokens.output" = "Output";
+"tokens.cache" = "Cache";
+"tokens.inputHelp" = "Input tokens excluding cache.";
+"tokens.outputHelp" = "Output tokens, including reasoning reported by the service.";
+"tokens.cacheHelp" = "Read: {0} · Written: {1}. Cache is separate from input.";
+"tokens.since" = "Since {0}";
+"tokens.unreported" = "{0} requests did not report token usage; these totals are partial.";
+"tokens.notSaved" = "Token history could not be saved.";
+"tokens.unavailable" = "Token usage is unavailable.";

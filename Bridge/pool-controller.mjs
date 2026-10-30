@@ -1,6 +1,7 @@
 import { readFile, rename, open, unlink } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { evaluateQuota, unknownQuota, creditPermission, quotaForModel } from './quota-state.mjs';
 import { credentialPrefix } from './credential-files.mjs';
 import { OAuthSessionManager } from './oauth-session.mjs';
@@ -9,6 +10,19 @@ import { models, resolveModelVariant, supportedModelIds } from './model-catalog.
 export { evaluateQuota } from './quota-state.mjs';
 export const capabilityTTL = 60000;
 const canonicalEmail = value => typeof value === 'string' ? value.trim().toLowerCase() : value;
+
+// Stop this request's wait without cancelling metadata shared by other calls.
+async function waitForRequest(pending, signal) {
+  if (!signal) return pending;
+  let onAbort;
+  const cancelled = new Promise((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try { return await Promise.race([pending, cancelled]); }
+  finally { signal.removeEventListener('abort', onAbort); }
+}
 
 
 export class BridgeError extends Error {
@@ -88,7 +102,7 @@ export class ManagementClient {
 }
 
 export class PoolController {
-  constructor({ runtimeDir, management = new ManagementClient({ runtimeDir }), now = Date.now, oauthSessions = new OAuthSessionManager({ runtimeDir }) }) {
+  constructor({ runtimeDir, management = new ManagementClient({ runtimeDir }), now = Date.now, oauthSessions = new OAuthSessionManager({ runtimeDir }), tokenUsage = null, refreshAfterInference = false }) {
     this.connections = new AccountConnections(this, oauthSessions);
     this.runtimeDir = runtimeDir; this.management = management; this.now = now;
     this.quotas = new Map(); this.inflight = new Map(); this.transientBlocks = new Map();
@@ -96,8 +110,51 @@ export class PoolController {
     this.quotaMetadata = new WeakMap(); this.resetBarriers = new Map(); this.rememberedRevision = -1; this.rememberedCredits = false;
     this.quotaEpochs = new Map(); this.resetInFlight = new Map(); this.lastAutomaticRun = null;
     this.activeAccounts = new Map(); this.disconnecting = new Set(); this.removedAccounts = new Set();
+    this.activeInferenceAccounts = new Map(); this.tokenUsage = tokenUsage;
+    this.changes = new EventEmitter(); this.quotaRefreshTimers = new Map();
+    this.refreshAfterInference = refreshAfterInference; this.backgroundQuotaRefresh = null; this.notificationsStopped = false;
+    if (tokenUsage) tokenUsage.onChange = () => this.notifyChange();
     this.capabilityCache = new Map(); this.capabilityInflight = new Map(); this.capabilityEpochs = new Map(); this.capabilityIdentities = new Map();
     this.credentialReadSequence = 0; this.credentialPending = null;
+  }
+  subscribe(listener) { this.changes.on('changed', listener); return () => this.changes.off('changed', listener); }
+  notifyChange() { this.changes.emit('changed'); }
+  scheduleQuotaRefresh(email) {
+    if (!this.refreshAfterInference || this.pausedForUpdate || this.notificationsStopped) return;
+    const current = this.quotaRefreshTimers.get(email);
+    if (current) { if (current.running) current.dirty = true; return; }
+    const entry = { timer: null, running: false, dirty: false };
+    entry.timer = setTimeout(async () => {
+      entry.running = true;
+      try {
+        const state = await this.readState(), rows = await this.credentials();
+        const credential = this.credentialForAccount(rows, state.accounts.find(account => account.email === email));
+        if (!this.pausedForUpdate && credential && !credential.disabled) await this.quota(credential);
+      } catch { /* The last confirmed quota stays visible until a later check. */ }
+      finally {
+        this.quotaRefreshTimers.delete(email);
+        if (entry.dirty) this.scheduleQuotaRefresh(email);
+      }
+    }, 1000);
+    entry.timer.unref(); this.quotaRefreshTimers.set(email, entry);
+  }
+  async refreshStaleQuotas(maxAgeMs = 30000) {
+    if (this.pausedForUpdate) return;
+    if (this.backgroundQuotaRefresh) return this.backgroundQuotaRefresh;
+    this.backgroundQuotaRefresh = (async () => {
+      const state = await this.readState(), rows = await this.credentials();
+      if (this.pausedForUpdate) return;
+      await Promise.all(state.accounts.map(async account => {
+        const credential = this.credentialForAccount(rows, account), quota = this.quotas.get(account.email);
+        if (credential && !credential.disabled && (!quota || !Number.isFinite(Date.parse(quota.checked_at)) || this.now() - Date.parse(quota.checked_at) >= maxAgeMs)) await this.quota(credential);
+      }));
+    })();
+    try { await this.backgroundQuotaRefresh; } finally { this.backgroundQuotaRefresh = null; }
+  }
+  stopNotifications() {
+    this.notificationsStopped = true;
+    for (const entry of this.quotaRefreshTimers.values()) clearTimeout(entry.timer);
+    this.quotaRefreshTimers.clear(); this.changes.removeAllListeners();
   }
   async readState() {
     const stored = JSON.parse(await readFile(join(this.runtimeDir, 'accounts-state.json'), 'utf8'));
@@ -270,7 +327,7 @@ export class PoolController {
       } catch { snapshot = unknownQuota(); }
       snapshot.checked_at = new Date(this.now()).toISOString();
       if ((this.quotaEpochs.get(credential.name) ?? 0) !== epoch) return this.quota(credential);
-      this.quotaMetadata.set(snapshot, metadata); this.quotas.set(credential.email, snapshot); return snapshot;
+      this.quotaMetadata.set(snapshot, metadata); this.quotas.set(credential.email, snapshot); this.notifyChange(); return snapshot;
     })();
     this.inflight.set(credential.name, pending);
     try { return await pending; } finally { if (this.inflight.get(credential.name) === pending) this.inflight.delete(credential.name); }
@@ -282,18 +339,21 @@ export class PoolController {
   async *candidates({ model, countOnly = false, signal } = {}) {
     const variant = resolveModelVariant(model);
     if (!variant) throw new BridgeError(400, 'Selecione um modelo e uma modalidade disponíveis neste perfil.');
-    const state = await this.readState();
-    const credentials = await this.credentials();
+    signal?.throwIfAborted();
+    const state = await waitForRequest(this.readState(), signal);
+    const credentials = await waitForRequest(this.credentials(), signal);
     const order = state.mode === 'fixed' ? [state.fixed_email] : state.priority_order;
     const observed = new Map(); const offered = new Set();
     const lookup = async email => {
+      signal?.throwIfAborted();
       const account = state.accounts.find(a => a.email === email);
       const credential = this.credentialForAccount(credentials, account);
-      const capability = credential ? await this.capabilities(credential) : null;
-      let quota = credential ? await this.quota(credential) : unknownQuota('disconnected');
+      const capability = credential ? await waitForRequest(this.capabilities(credential), signal) : null;
+      signal?.throwIfAborted();
+      let quota = credential ? await waitForRequest(this.quota(credential), signal) : unknownQuota('disconnected');
       signal?.throwIfAborted();
       if (credential && state.auto_reset_emails.includes(email)) {
-        await this.maybeAutomaticReset(email, credential, quota);
+        await waitForRequest(this.maybeAutomaticReset(email, credential, quota), signal);
         quota = this.quotas.get(email) ?? quota;
       }
       const row = { account, credential, capability, quota, connected: Boolean(credential), disabled: Boolean(credential?.disabled) };
@@ -305,8 +365,12 @@ export class PoolController {
       signal?.throwIfAborted();
       if (countOnly) {
         const account = state.accounts.find(a => a.email === email), credential = this.credentialForAccount(credentials, account);
-        const row = { account, credential, capability: credential ? await this.capabilities(credential) : null };
-        if (capable(row)) yield selection(row);
+        // The provider selects an operational credential even for its local
+        // tokenizer. Counting bypasses usage quotas, not credential cooldowns.
+        if (!this.operational(credential)) continue;
+        const row = { account, credential, capability: await waitForRequest(this.capabilities(credential), signal) };
+        signal?.throwIfAborted();
+        if (capable(row) && this.operational(credential)) yield selection(row);
         continue;
       }
       const row = await lookup(email);
@@ -326,16 +390,16 @@ export class PoolController {
     }
     const permission = creditPermission(state, [...observed.values()]);
     if (!permission.allowed) return;
-    const current = await this.readState();
+    const current = await waitForRequest(this.readState(), signal);
     if (current.revision !== state.revision || !current.allow_extra_credits) return;
     for (const email of order) {
       signal?.throwIfAborted();
       const row = observed.get(email);
       if (!capable(row) || !row.quota.credits.eligible || !quotaForModel(row.quota, variant.baseModel).additional_allowed || !row.credential || row.credential.disabled || (this.transientBlocks.get(email) ?? 0) > this.now()) continue;
       if (row.credential.unavailable) {
-        await this.management.resetCooldown(row.credential); row.credential.unavailable = false; this.credentialCache = null;
+        await waitForRequest(this.management.resetCooldown(row.credential), signal); row.credential.unavailable = false; this.credentialCache = null;
       }
-      const latest = await this.readState();
+      const latest = await waitForRequest(this.readState(), signal);
       if (latest.revision !== state.revision || !latest.allow_extra_credits) return;
       const candidate = { ...selection(row), consumption_source: 'credits', policy_revision: state.revision,
         credit_proof: [...observed.values()].map(r => ({ email: r.account.email, credential: r.credential })) };
@@ -343,9 +407,10 @@ export class PoolController {
       yield candidate;
     }
   }
-  async validateCandidate(account) {
-    const state = await this.readState();
-    const credentials = await this.credentials(true);
+  async validateCandidate(account, { signal } = {}) {
+    signal?.throwIfAborted();
+    const state = await waitForRequest(this.readState(), signal);
+    const credentials = await waitForRequest(this.credentials(true), signal);
     const credential = credentials.find(credential => credential.name === account.name && this.capabilityIdentity(credential) === account.capability?.identity);
     if (!state.accounts.some(row => row.email === account.email && row.name === account.name) ||
       !credential) return false;
@@ -355,7 +420,7 @@ export class PoolController {
   validateCandidateNow(account) {
     if (!this.credentialForAccount(this.latestCredentialRows ?? [], account) || account.selection_identity !== this.rememberedSelection || !this.capabilityCurrent(account.capability, account.credential) ||
       !account.capability.ids.includes(account.requested_model)) return false;
-    if (account.count_only) return true;
+    if (account.count_only) return this.operational(account.credential);
     if (account.consumption_source === 'subscription') {
       const quota = this.quotas.get(account.email), meta = quota && this.quotaMetadata.get(quota);
       return Boolean(quotaForModel(quota, resolveModelVariant(account.requested_model)?.baseModel).eligible && meta && meta.identity === this.identity(account.credential) &&
@@ -374,18 +439,27 @@ export class PoolController {
     const selected = this.quotas.get(account.email);
     return Boolean(selected?.credits.eligible && quotaForModel(selected, resolveModelVariant(account.requested_model)?.baseModel).additional_allowed && this.operational(account.credential) && creditPermission({ allow_extra_credits: true }, rows).allowed);
   }
-  markUsed(account) { this.lastUsed = { email: account.email, at: new Date(this.now()).toISOString(), consumption_source: account.consumption_source ?? 'subscription' }; }
+  markUsed(account) { this.lastUsed = { email: account.email, at: new Date(this.now()).toISOString(), consumption_source: account.consumption_source ?? 'subscription' }; this.notifyChange(); }
   acquire(account) {
     if (this.reconnecting === account.email || this.disconnecting.has(account.email) || this.removedAccounts.has(account.email)) return null;
     this.activeAccounts.set(account.email, (this.activeAccounts.get(account.email) ?? 0) + 1);
+    if (!account.count_only) this.activeInferenceAccounts.set(account.email, (this.activeInferenceAccounts.get(account.email) ?? 0) + 1);
+    this.notifyChange();
     let released = false;
-    return () => { if (!released) { released = true; this.activeAccounts.set(account.email, Math.max(0, (this.activeAccounts.get(account.email) ?? 1) - 1)); } };
+    return () => { if (!released) {
+      released = true; this.activeAccounts.set(account.email, Math.max(0, (this.activeAccounts.get(account.email) ?? 1) - 1));
+      if (!account.count_only) this.activeInferenceAccounts.set(account.email, Math.max(0, (this.activeInferenceAccounts.get(account.email) ?? 1) - 1));
+      this.notifyChange();
+      if (!account.count_only) this.scheduleQuotaRefresh(account.email);
+    } };
   }
+  recordTokenUsage(receipt) { this.tokenUsage?.record(receipt); }
   markUnavailable(account, status) {
     // A bounded backoff also covers an upstream 429 that has not reached the usage endpoint yet.
     this.transientBlocks.set(account.email, this.now() + 60000);
     this.quotas.set(account.email, { ...(this.quotas.get(account.email) ?? unknownQuota()), eligible: false, reason: status === 429 ? 'cooldown' : 'auth_error', windows: this.quotas.get(account.email)?.windows ?? [], checked_at: new Date(this.now()).toISOString() });
     this.credentialCache = null;
+    this.notifyChange();
   }
   mutate(action) {
     const pending = this.writeQueue.then(action, action);
@@ -402,7 +476,9 @@ export class PoolController {
       await rename(temporary, destination);
       const directory = await open(this.runtimeDir, 'r');
       try { await directory.sync(); } finally { await directory.close(); }
-      this.rememberState(next); return next;
+      this.rememberState(next); this.notifyChange();
+      for (const account of next.accounts) if (!this.quotas.has(account.email)) this.scheduleQuotaRefresh(account.email);
+      return next;
     } finally {
       if (handle) await handle.close();
       await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; });
@@ -617,7 +693,8 @@ export class PoolController {
       const operational = this.operational(credential);
       const paid = credit.allowed && quota.credits.eligible && quota.additional_allowed;
       const eligible = Boolean(operational && (quota.eligible || paid));
-      return { email, plan: credential?.plan ?? account.plan, connected: Boolean(credential), active_requests: this.activeAccounts.get(email) ?? 0, ...quota,
+      return { email, plan: credential?.plan ?? account.plan, connected: Boolean(credential), active_requests: this.activeAccounts.get(email) ?? 0,
+        active_inference_requests: this.activeInferenceAccounts.get(email) ?? 0, ...quota,
         eligible, consumption_source: eligible ? quota.eligible ? 'subscription' : 'credits' : null,
         resets: this.resetSnapshot(state, email, credential, quota),
         reason: !credential ? 'disconnected' : credential.disabled ? 'disabled' : !operational ? 'cooldown' : paid && !quota.eligible ? 'credits' : quota.reason };
@@ -630,6 +707,7 @@ export class PoolController {
       next_eligible_account: (state.mode === 'fixed' ? accounts.find(a => a.email === state.fixed_email && a.eligible) : accounts.find(a => a.eligible))?.email ?? null,
       connection: state.pending_oauth ? { email: state.pending_oauth.email, started_at: state.pending_oauth.started_at, error: state.pending_oauth.error ?? null, error_code: state.pending_oauth.error_code ?? null, url: state.pending_oauth.error_code ? null : connectionURL(state.pending_oauth.url) } : null,
       last_connection: state.last_connection ?? null, accounts,
+      token_usage: this.tokenUsage?.snapshot() ?? null,
     };
   }
 }

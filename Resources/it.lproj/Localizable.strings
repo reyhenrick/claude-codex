@@ -36,7 +36,6 @@
 "action.enableAutoReset" = "Attiva automatico";
 "action.restoreConnection" = "Ripristina connessione";
 "action.quit" = "Esci dall’app";
-"action.refresh" = "Aggiorna limiti, crediti e ripristini";
 "action.retry" = "Riprova";
 "action.setupClaude" = "Nuova installazione di Claude…";
 "action.showFinder" = "Mostra nel Finder";
@@ -89,7 +88,6 @@
 "mode.automaticDescription" = "Dà priorità agli abbonamenti nell’ordine seguente.";
 "mode.fixed" = "Account fisso";
 "mode.fixedDescription" = "Usa solo l’account selezionato, seguendo la regola sui crediti qui sotto.";
-"panel.admissionNotice" = "Il cambio vale dalla prossima iterazione. La richiesta in corso mantiene l’account e può usare crediti oltre la quota; questo controllo blocca le nuove richieste.";
 "panel.applying" = "Applicazione della modifica";
 "panel.loading" = "Verifica degli account…";
 "panel.mode" = "Modalità di utilizzo";
@@ -203,3 +201,21 @@
 
 "connection.cancelUnconfirmed" = "L’autorizzazione precedente è ancora in sospeso. Completala o annullala prima di riprovare.";
 "account.serviceAllowsUse" = "Utilizzo consentito dal servizio.";
+"menuBar.unavailable" = "La quota rimanente non è disponibile.";
+"menuBar.multipleActive" = "{0} account sono attivi; questa quota appartiene all’account mostrato.";
+"menuBar.checkedAt" = "Quota verificata il {0}";
+"tokens.title" = "Token";
+"tokens.period" = "Periodo di consumo dei token";
+"tokens.today" = "Oggi";
+"tokens.accumulated" = "Accumulato";
+"tokens.total" = "in totale";
+"tokens.input" = "Input";
+"tokens.output" = "Output";
+"tokens.cache" = "Cache";
+"tokens.inputHelp" = "Token di input esclusa la cache.";
+"tokens.outputHelp" = "Token di output, incluso il ragionamento riportato dal servizio.";
+"tokens.cacheHelp" = "Lettura: {0} · Scrittura: {1}. La cache è separata dall’input.";
+"tokens.since" = "Dal {0}";
+"tokens.unreported" = "{0} richieste non hanno riportato il consumo di token; questi totali sono parziali.";
+"tokens.notSaved" = "Non è stato possibile salvare la cronologia dei token.";
+"tokens.unavailable" = "Il consumo di token non è disponibile.";

@@ -118,6 +118,7 @@ struct Account: Decodable, Identifiable, Hashable {
     let windows: [QuotaWindow]
     let checkedAt: String?
     let activeRequests: Int?
+    let activeInferenceRequests: Int?
     let subscriptionStatus: String
     let consumptionSource: String?
     let ordinaryAllowed: Bool?
@@ -193,6 +194,116 @@ struct PoolSnapshot: Decodable {
     let creditPhase: Bool
     let creditBlockReason: String
     let nextEligibleAccount: String?
+    let tokenUsage: TokenUsageSnapshot?
+
+    var activeInferenceAccounts: [Account] {
+        let active = accounts.filter { ($0.activeInferenceRequests ?? 0) > 0 }
+        return active.sorted {
+            (priorityOrder.firstIndex(of: $0.email) ?? Int.max) < (priorityOrder.firstIndex(of: $1.email) ?? Int.max)
+        }
+    }
+    var menuBarAccount: Account? {
+        let active = activeInferenceAccounts
+        if let lastUsed, let account = active.first(where: { $0.email == lastUsed.email }) { return account }
+        if let account = active.first { return account }
+        let email = mode == "fixed" ? fixedEmail : nextEligibleAccount
+        return accounts.first(where: { $0.email == email })
+    }
+}
+
+struct MenuBarQuotaPresentation {
+    let title: String
+    let tooltip: String
+
+    init(snapshot: PoolSnapshot?, unavailable: Bool = false) {
+        guard !unavailable, let snapshot, let account = snapshot.menuBarAccount,
+              let remaining = account.remainingPercent, remaining.isFinite else {
+            title = "—"
+            tooltip = "Claude Codex\n" + L10n.text("menuBar.unavailable")
+            return
+        }
+        let percentage = Int(max(0, min(100, remaining)))
+        title = "\(percentage)%"
+        var details = ["Claude Codex · " + L10n.text("quota.remaining", String(percentage)), account.email]
+        if snapshot.activeInferenceAccounts.count > 1 {
+            details.append(L10n.text("menuBar.multipleActive", String(snapshot.activeInferenceAccounts.count)))
+        }
+        if let checkedAt = account.checkedAt, let date = TokenUsageSnapshot.date(checkedAt) {
+            details.append(L10n.text("menuBar.checkedAt", date.formatted(date: .abbreviated, time: .shortened)))
+        }
+        tooltip = details.joined(separator: "\n")
+    }
+}
+
+// Window dimensions belong only to this app run, never to saved preferences.
+struct PanelSizeState {
+    private var main: CGSize?
+    private var connection: CGSize?
+    static func minimum(fittingHeight: CGFloat) -> CGSize {
+        CGSize(width: 420, height: fittingHeight.isFinite ? max(0, ceil(fittingHeight)) : 0)
+    }
+    func width(connection isConnection: Bool, maximum: CGFloat) -> CGFloat {
+        min(maximum, max(420, (isConnection ? connection : main)?.width ?? 420))
+    }
+    func size(connection isConnection: Bool, maximum: CGSize, minimumHeight: CGFloat, idealHeight: CGFloat) -> CGSize {
+        let minimum = Self.minimum(fittingHeight: minimumHeight)
+        let ideal = idealHeight.isFinite ? max(minimum.height, ceil(idealHeight)) : minimum.height
+        let preferred = (isConnection ? connection : main) ?? CGSize(width: 420, height: min(isConnection ? 340 : 650, ideal))
+        return CGSize(width: width(connection: isConnection, maximum: maximum.width),
+                      height: min(maximum.height, max(minimum.height, preferred.height)))
+    }
+    mutating func remember(_ size: CGSize, connection isConnection: Bool) {
+        guard size.width.isFinite, size.height.isFinite else { return }
+        let value = CGSize(width: max(420, size.width), height: max(0, size.height))
+        if isConnection { connection = value } else { main = value }
+    }
+}
+
+enum TokenUsagePeriod: String, CaseIterable, Identifiable {
+    case today, total
+    var id: String { rawValue }
+    var title: String { L10n.text(self == .today ? "tokens.today" : "tokens.accumulated") }
+}
+
+struct TokenUsageTotals: Decodable {
+    let inputTokens: Int64
+    let outputTokens: Int64
+    let cacheReadTokens: Int64
+    let cacheWriteTokens: Int64
+    let cacheTokens: Int64
+    let totalTokens: Int64
+    let requests: Int64
+    let unreportedRequests: Int64
+
+    var isValid: Bool {
+        let counts = [inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, cacheTokens, totalTokens, requests, unreportedRequests]
+        guard counts.allSatisfy({ $0 >= 0 && $0 <= 9_007_199_254_740_991 }) else { return false }
+        return cacheReadTokens + cacheWriteTokens == cacheTokens && inputTokens + outputTokens + cacheTokens == totalTokens
+    }
+    static func formatted(_ count: Int64) -> String { count.formatted(.number.locale(L10n.locale)) }
+    static func compact(_ count: Int64) -> String {
+        count >= 1_000_000 ? count.formatted(.number.notation(.compactName).precision(.significantDigits(1...4)).locale(L10n.locale)) : formatted(count)
+    }
+}
+
+struct TokenUsageSnapshot: Decodable {
+    let available: Bool
+    let persisted: Bool
+    let startedAt: String?
+    let today: TokenUsageTotals?
+    let total: TokenUsageTotals?
+
+    func totals(for period: TokenUsagePeriod) -> TokenUsageTotals? {
+        guard available, persisted, let values = period == .today ? today : total, values.isValid else { return nil }
+        return values
+    }
+    static func date(_ value: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
 }
 
 struct LoginResponse: Decodable { let authUrl: String; let email: String }

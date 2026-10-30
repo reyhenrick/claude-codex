@@ -29,6 +29,7 @@ async function fixture(t) {
     resetCooldown: async () => {},
   };
   const controller = new PoolController({ runtimeDir, management });
+  t.after(() => controller.stopNotifications());
   return { controller, calls, quotas, management, runtimeDir };
 }
 async function start(t, server) {
@@ -141,6 +142,188 @@ test('cross-origin actions and invalid host are rejected; token counting does no
   assert.equal(badHost, 403);
   assert.equal((await authorizedFetch(base + '/v8/management/credentials')).status, 404);
   const tokens = await authorizedFetch(base + '/v1/messages/count_tokens', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(message) }); assert.equal(tokens.status, 200); assert.deepEqual(await tokens.json(), { input_tokens: 42 }); assert.equal(f.calls.length, 0); assert.equal(count, 1);
+});
+
+const countTokens = (base, value = message) => authorizedFetch(base + '/v1/messages/count_tokens', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value),
+});
+const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+
+test('router accounts for one inference receipt after failover and excludes count_tokens', async t => {
+  const f = await fixture(t), receipts = [], paths = [];
+  f.controller.tokenUsage = { record: value => receipts.push(value), snapshot: () => ({ available: true }) };
+  const upstream = http.createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks)); paths.push(request.url);
+    response.setHeader('content-type', 'application/json');
+    if (body.model.startsWith('conta-01/')) { response.writeHead(429); response.end('{}'); return; }
+    response.end(JSON.stringify(request.url.endsWith('count_tokens') ? { input_tokens: 100 } :
+      { type: 'message', model: 'gpt-6.1-sol-fast', content: [], usage: { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 75 } }));
+  });
+  await start(t, upstream);
+  const base = await start(t, createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic' }));
+  const inference = await post(base); assert.equal(inference.status, 200); await inference.text();
+  const counted = await countTokens(base); assert.equal(counted.status, 200); await counted.text();
+  assert.deepEqual(receipts, [{ input_tokens: 20, output_tokens: 5, cache_read_tokens: 75, cache_write_tokens: 0 }]);
+  assert.deepEqual(paths, ['/v1/messages', '/v1/messages', '/v1/messages/count_tokens']);
+  const state = await f.controller.status(); assert.deepEqual(state.token_usage, { available: true });
+  assert.ok(state.accounts.every(row => row.active_inference_requests === 0));
+});
+
+test('status distinguishes inference activity from quota-free preflight and release is idempotent', async t => {
+  const f = await fixture(t), account = (await f.controller.readState()).accounts[0];
+  const releaseCount = f.controller.acquire({ ...account, count_only: true });
+  let state = await f.controller.status(); assert.equal(state.accounts[0].active_requests, 1); assert.equal(state.accounts[0].active_inference_requests, 0);
+  const releaseInference = f.controller.acquire({ ...account, count_only: false });
+  state = await f.controller.status(); assert.equal(state.accounts[0].active_requests, 2); assert.equal(state.accounts[0].active_inference_requests, 1);
+  releaseCount(); releaseCount(); state = await f.controller.status(); assert.equal(state.accounts[0].active_inference_requests, 1);
+  releaseInference(); releaseInference(); state = await f.controller.status(); assert.equal(state.accounts[0].active_requests, 0); assert.equal(state.accounts[0].active_inference_requests, 0);
+});
+
+test('state changes publish invalidations but reading the snapshot does not create an update loop', async t => {
+  const f = await fixture(t); let changes = 0;
+  const unsubscribe = f.controller.subscribe(() => changes++);
+  const account = (await f.controller.readState()).accounts[0];
+  const release = f.controller.acquire({ ...account, count_only: true }); assert.equal(changes, 1);
+  await f.controller.status(); assert.equal(changes, 1);
+  f.controller.markUsed(account); assert.equal(changes, 2);
+  release(); assert.equal(changes, 3);
+  await f.controller.update({ revision: 0, mode: 'fixed', fixed_email: account.email }); assert.equal(changes, 4);
+  unsubscribe(); f.controller.markUsed(account); assert.equal(changes, 4);
+});
+
+test('automatic quota checks share in-flight work and avoid querying fresh values', async t => {
+  const f = await fixture(t), gate = deferred(), entered = deferred();
+  f.management.quota = async credential => { f.calls.push(credential.email); entered.resolve(); await gate.promise; return available(); };
+  const first = f.controller.refreshStaleQuotas(); await entered.promise;
+  const second = f.controller.refreshStaleQuotas(); gate.resolve(); await Promise.all([first, second]);
+  assert.deepEqual(f.calls, emails);
+  await f.controller.refreshStaleQuotas(); assert.deepEqual(f.calls, emails);
+  f.controller.pausedForUpdate = true; await f.controller.refreshStaleQuotas(0); assert.deepEqual(f.calls, emails);
+});
+
+test('inference completion schedules one quota check while preflight never schedules one', { timeout: 4000 }, async t => {
+  const f = await fixture(t), refreshed = deferred(); f.controller.refreshAfterInference = true;
+  const account = (await f.controller.readState()).accounts[0];
+  const count = f.controller.acquire({ ...account, count_only: true }); count();
+  assert.equal(f.controller.quotaRefreshTimers.size, 0);
+  f.management.quota = async credential => { f.calls.push(credential.email); refreshed.resolve(); return available(20); };
+  const first = f.controller.acquire(account), second = f.controller.acquire(account); first(); second();
+  assert.equal(f.controller.quotaRefreshTimers.size, 1);
+  const keepAlive = setInterval(() => {}, 1000);
+  try { await refreshed.promise; assert.deepEqual(f.calls, [account.email]); }
+  finally { clearInterval(keepAlive); }
+});
+
+test('completion during an in-flight quota lookup schedules a trailing fresh check', { timeout: 5000 }, async t => {
+  const f = await fixture(t), firstEntered = deferred(), releaseFirst = deferred(), secondEntered = deferred();
+  f.controller.refreshAfterInference = true;
+  f.management.quota = async credential => {
+    f.calls.push(credential.email);
+    if (f.calls.length === 1) { firstEntered.resolve(); await releaseFirst.promise; }
+    else secondEntered.resolve();
+    return available();
+  };
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    f.controller.scheduleQuotaRefresh(emails[0]); await firstEntered.promise;
+    f.controller.scheduleQuotaRefresh(emails[0]); f.controller.scheduleQuotaRefresh(emails[0]);
+    releaseFirst.resolve(); await secondEntered.promise;
+    assert.deepEqual(f.calls, [emails[0], emails[0]]);
+  } finally { releaseFirst.resolve(); clearInterval(keepAlive); }
+});
+
+test('token counting skips credential cooldowns while preserving model, history and quota-free behavior', async t => {
+  const f = await fixture(t), credentials = f.management.credentials, captured = [];
+  f.management.credentials = async () => (await credentials()).map((row, i) => ({ ...row, unavailable: i < 2, next_retry_after: '2099-01-01T00:00:00Z' }));
+  f.management.resetCooldown = async () => assert.fail('count must not reset a cooldown');
+  f.controller.maybeAutomaticReset = async () => assert.fail('count must not redeem a reset');
+  const upstream = http.createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    captured.push(JSON.parse(Buffer.concat(chunks))); res.setHeader('content-type', 'application/json'); res.end('{"input_tokens":42}');
+  });
+  await start(t, upstream);
+  const base = await start(t, createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic' }));
+  const astra = { ...message, model: 'anthropic.claude-opus-5-5' };
+  const result = await countTokens(base, astra);
+  assert.equal(result.status, 200); assert.deepEqual(await result.json(), { input_tokens: 42 });
+  assert.equal(captured.length, 1); assert.equal(captured[0].model, 'conta-03/gpt-6-astra-fast');
+  assert.deepEqual(captured[0].messages, message.messages); assert.equal(captured[0].output_config.effort, 'xhigh');
+  assert.deepEqual(f.calls, []); assert.equal(f.controller.lastUsed, null);
+  await f.controller.update({ revision: 0, mode: 'fixed', fixed_email: emails[0] });
+  const fixed = await countTokens(base, astra); assert.equal(fixed.status, 429); await fixed.text();
+  assert.equal(captured.length, 1, 'fixed mode never falls through to another account');
+});
+
+test('token counting with every credential blocked returns promptly without provider calls', async t => {
+  const f = await fixture(t), credentials = f.management.credentials;
+  f.management.credentials = async () => (await credentials()).map(row => ({ ...row, unavailable: true, next_retry_after: '2099-01-01T00:00:00Z' }));
+  f.management.models = async () => assert.fail('blocked credential metadata cannot hold up admission');
+  const upstream = http.createServer(() => assert.fail('blocked credentials must not be dispatched')); await start(t, upstream);
+  const base = await start(t, createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic' }));
+  const result = await countTokens(base); assert.equal(result.status, 429); await result.text(); assert.deepEqual(f.calls, []);
+});
+
+test('token counting fails over only on credential errors and never charges quota or marks inference used', async t => {
+  for (const status of [401, 402, 403, 429, 400, 413, 500, 503]) await t.test(String(status), async t => {
+    const f = await fixture(t), captured = [];
+    const upstream = http.createServer(async (req, res) => {
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      captured.push(JSON.parse(Buffer.concat(chunks)));
+      const failed = captured.length === 1;
+      res.writeHead(failed ? status : 200, { 'content-type': 'application/json', ...(failed ? { 'retry-after': '437449', 'x-should-retry': 'false' } : {}) });
+      res.end(failed ? '{"error":{"type":"synthetic_error"}}' : '{"input_tokens":42}');
+    });
+    await start(t, upstream);
+    const base = await start(t, createPoolRouter({ controller: f.controller, backendPort: upstream.address().port, getClientKey: async () => 'synthetic' }));
+    const result = await countTokens(base), retryable = [401, 402, 403, 429].includes(status);
+    assert.equal(result.status, retryable ? 200 : status); await result.json();
+    assert.equal(result.headers.get('retry-after'), retryable ? null : '437449');
+    assert.equal(result.headers.get('x-should-retry'), retryable ? null : 'false');
+    assert.deepEqual(captured.map(body => body.model), retryable ? ['conta-01/gpt-6.1-sol-fast', 'conta-02/gpt-6.1-sol-fast'] : ['conta-01/gpt-6.1-sol-fast']);
+    for (const body of captured) assert.deepEqual(body.messages, message.messages);
+    assert.deepEqual(f.calls, []); assert.equal(f.controller.lastUsed, null);
+  });
+});
+
+test('count selection rechecks operational state after capability lookup and before dispatch', async t => {
+  const f = await fixture(t), models = f.management.models;
+  f.management.models = async credential => {
+    if (credential.email === emails[0]) f.controller.transientBlocks.set(credential.email, Date.now() + 60000);
+    return models(credential);
+  };
+  const candidates = [];
+  for await (const candidate of f.controller.candidates({ model: message.model, countOnly: true })) candidates.push(candidate);
+  assert.deepEqual(candidates.map(row => row.email), emails.slice(1));
+  const selected = candidates[0], credentials = f.management.credentials;
+  f.management.credentials = async () => (await credentials()).map(row => ({ ...row, unavailable: row.email === selected.email, next_retry_after: '2099-01-01T00:00:00Z' }));
+  assert.equal(await f.controller.validateCandidate(selected), false);
+  assert.equal(f.controller.validateCandidateNow(selected), false);
+});
+
+test('cancelled admission stops waiting on shared metadata without starting quota or automatic resets', { timeout: 3000 }, async t => {
+  const f = await fixture(t), gate = deferred(), entered = deferred(), models = f.management.models;
+  let lookups = 0, resets = 0;
+  f.management.models = async credential => { lookups++; entered.resolve(); await gate.promise; return models(credential); };
+  f.controller.maybeAutomaticReset = async () => { resets++; };
+  const state = await f.controller.readState(); await f.controller.saveState({ ...state, auto_reset_emails: emails });
+  const abort = new AbortController();
+  const cancelled = f.controller.candidates({ model: message.model, signal: abort.signal }).next();
+  await entered.promise;
+  const credential = (await f.controller.credentials())[0], shared = f.controller.capabilities(credential);
+  abort.abort(); await assert.rejects(cancelled, { name: 'AbortError' });
+  assert.deepEqual(f.calls, []); assert.equal(resets, 0);
+  gate.resolve(); assert.ok((await shared).ids.length); assert.equal(lookups, 1);
+  assert.deepEqual(f.calls, []); assert.equal(resets, 0);
+});
+
+test('cancelled validation releases its wait even if the credential request later rejects', { timeout: 3000 }, async t => {
+  const f = await fixture(t), gate = deferred(), entered = deferred();
+  const { value: account } = await f.controller.candidates({ model: message.model, countOnly: true }).next();
+  f.management.credentials = async () => { entered.resolve(); return gate.promise; };
+  const abort = new AbortController(), pending = f.controller.validateCandidate(account, { signal: abort.signal });
+  await entered.promise; abort.abort(); await assert.rejects(pending, { name: 'AbortError' });
+  gate.reject(new Error('late metadata failure')); await new Promise(resolve => setImmediate(resolve));
 });
 
 test('disconnect cancels upstream streaming and never replays a started response', async t => {

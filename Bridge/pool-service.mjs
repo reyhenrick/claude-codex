@@ -11,6 +11,7 @@ import { readClientKey } from './client-auth.mjs';
 import { renderModelInstructions } from './model-instructions.mjs';
 import { refreshManagedModelRules } from './model-rules.mjs';
 import { loadServiceIdentity } from './service-contract.mjs';
+import { TokenUsageStore } from './token-usage.mjs';
 
 process.umask(0o077);
 const runtimeDir = runtimeDirectory();
@@ -26,7 +27,8 @@ const configPath = join(runtimeDir, 'config.yaml');
 const child = spawn(fileURLToPath(new URL('../bin/cli-proxy-api', import.meta.url)), ['-config', configPath, '--local-model'], {
   cwd: runtimeDir, stdio: 'ignore', env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME, LANG: process.env.LANG ?? 'en_US.UTF-8' },
 });
-const controller = new PoolController({ runtimeDir });
+const tokenUsage = await TokenUsageStore.load({ runtimeDir });
+const controller = new PoolController({ runtimeDir, tokenUsage, refreshAfterInference: true });
 controller.pausedForUpdate = (await controller.readState()).update_draining;
 const server = createPoolRouter({ controller, serviceIdentity, getIngressKey: () => readClientKey(runtimeDir), getClientKey: async () => {
   const current = JSON.parse(await readFile(configPath, 'utf8'));
@@ -37,19 +39,33 @@ const server = createPoolRouter({ controller, serviceIdentity, getIngressKey: ()
 let stopping = false;
 let stopCode = 0;
 let modelRuleRefresh = Promise.resolve();
-const exitAfterModelRules = code => { modelRuleRefresh.finally(() => process.exit(code)); };
+let resolveClosed;
+const serverClosed = new Promise(resolve => { resolveClosed = resolve; });
+let finishing;
+const exitAfterWork = code => {
+  finishing ??= (async () => {
+    await serverClosed;
+    // Let aborted response pipelines finalize their observers before the last
+    // flush. The service lock remains held until every queued write settles.
+    await new Promise(resolve => setImmediate(resolve));
+    await Promise.allSettled([modelRuleRefresh, tokenUsage.flush()]);
+    process.exit(code);
+  })();
+};
 const automaticTimer = setInterval(() => { controller.runAutomaticResets().catch(() => {}); }, 60000);
 automaticTimer.unref();
+const quotaTimer = setInterval(() => { controller.refreshStaleQuotas().catch(() => {}); }, 15000);
+quotaTimer.unref();
 function stop(code) {
   if (stopping) return; stopping = true; stopCode = code;
-  controller.pausedForUpdate = true; clearInterval(automaticTimer);
-  server.close(() => { child?.kill('SIGTERM'); if (!child?.pid || child.exitCode !== null || child.signalCode !== null) exitAfterModelRules(code); });
+  controller.pausedForUpdate = true; clearInterval(automaticTimer); clearInterval(quotaTimer); controller.stopNotifications();
+  server.close(() => { resolveClosed(); child?.kill('SIGTERM'); if (!child?.pid || child.exitCode !== null || child.signalCode !== null) exitAfterWork(code); });
   const deadline = setTimeout(() => { server.closeAllConnections(); child?.kill('SIGTERM'); }, 30000); deadline.unref();
-  const kill = setTimeout(() => { if (child?.pid && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); else process.exit(code); }, 35000); kill.unref();
+  const kill = setTimeout(() => { if (child?.pid && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); else exitAfterWork(code); }, 35000); kill.unref();
 }
 process.on('SIGTERM', () => stop(0)); process.on('SIGINT', () => stop(0));
 child?.on('error', () => stop(1));
-child?.on('exit', () => { if (stopping) exitAfterModelRules(stopCode); else stop(1); });
+child?.on('exit', () => { if (stopping) exitAfterWork(stopCode); else stop(1); });
 server.on('error', () => stop(1));
 let ready = false;
 const startupDeadline = Date.now() + 30000;

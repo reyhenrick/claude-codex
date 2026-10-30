@@ -186,7 +186,7 @@ test('compressed response passthrough retains its encoding header and exact byte
   assert.equal(result.headers['content-encoding'], 'gzip');
 });
 
-async function idleFixture(t, write, { upstreamIdleMs = 100, streamHeartbeatMs = 8 } = {}) {
+async function idleFixture(t, write, { upstreamHeaderMs, upstreamIdleMs = 100, streamHeartbeatMs = 8 } = {}) {
   let calls = 0, released = 0;
   const closed = deferred(), releaseDone = deferred();
   const upstream = http.createServer((request, reply) => {
@@ -198,7 +198,7 @@ async function idleFixture(t, write, { upstreamIdleMs = 100, streamHeartbeatMs =
   await serve(t, upstream);
   const controller = fakeController();
   controller.acquire = () => { let done = false; return () => { if (!done) { done = true; released++; releaseDone.resolve(); } }; };
-  const base = await serve(t, createPoolRouter({ controller, backendPort: upstream.address().port, upstreamIdleMs, streamHeartbeatMs,
+  const base = await serve(t, createPoolRouter({ controller, backendPort: upstream.address().port, upstreamHeaderMs, upstreamIdleMs, streamHeartbeatMs,
     getIngressKey: async () => key, getClientKey: async () => 'synthetic' }));
   return { base, closed, releaseDone, calls: () => calls, released: () => released };
 }
@@ -240,7 +240,7 @@ test('real upstream bytes renew the idle budget across a response longer than th
       if (step === 8) { clearInterval(timer); reply.end(stop); }
     }, 35);
     reply.on('close', () => clearInterval(timer));
-  }, { upstreamIdleMs: 180, streamHeartbeatMs: 8 });
+  }, { upstreamHeaderMs: 100, upstreamIdleMs: 180, streamHeartbeatMs: 8 });
   const result = await readWire(fixture.base);
   await fixture.closed.promise;
   await fixture.releaseDone.promise;
@@ -315,5 +315,44 @@ test('idle guard refuses timer values that Node would overflow into an immediate
     const input = new Readable({ read() {} }); input.on('error', () => {});
     try { assert.throws(() => guardUpstreamSilence(input, value), TypeError); }
     finally { input.destroy(); }
+  }
+});
+
+test('a provider that never sends headers is closed once without replaying inference', { timeout: 3000 }, async t => {
+  const closed = deferred(), released = deferred(); let calls = 0, releases = 0;
+  const upstream = http.createServer((request, reply) => { calls++; request.resume(); reply.on('close', closed.resolve); });
+  await serve(t, upstream);
+  const controller = fakeController();
+  controller.candidates = async function* () { yield { prefix: 'first' }; yield { prefix: 'second' }; };
+  controller.acquire = () => { let done = false; return () => { if (!done) { done = true; releases++; released.resolve(); } }; };
+  const base = await serve(t, createPoolRouter({ controller, backendPort: upstream.address().port, upstreamHeaderMs: 40,
+    getIngressKey: async () => key, getClientKey: async () => 'synthetic' }));
+  const result = await fetch(base + '/v1/messages', { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-opus-5-5', stream: true, messages: [] }) });
+  assert.equal(result.status, 502); assert.equal((await result.json()).error.code, 'bridge.unavailable');
+  assert.equal(result.headers.get('x-should-retry'), 'false');
+  await closed.promise; await released.promise;
+  assert.equal(calls, 1); assert.equal(releases, 1);
+});
+
+test('cancellation before headers aborts the provider and releases its account before the deadline', { timeout: 3000 }, async t => {
+  const entered = deferred(), closed = deferred(), released = deferred(); let calls = 0, releases = 0;
+  const upstream = http.createServer((request, reply) => { calls++; request.resume(); reply.on('close', closed.resolve); entered.resolve(); });
+  await serve(t, upstream);
+  const controller = fakeController();
+  controller.acquire = () => { let done = false; return () => { if (!done) { done = true; releases++; released.resolve(); } }; };
+  const base = await serve(t, createPoolRouter({ controller, backendPort: upstream.address().port, upstreamHeaderMs: 10000,
+    getIngressKey: async () => key, getClientKey: async () => 'synthetic' }));
+  const abort = new AbortController();
+  const pending = fetch(base + '/v1/messages', { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, signal: abort.signal,
+    body: JSON.stringify({ model: 'claude-opus-5-5', stream: true, messages: [] }) });
+  await entered.promise; abort.abort(); await assert.rejects(pending, { name: 'AbortError' });
+  await closed.promise; await released.promise;
+  assert.equal(calls, 1); assert.equal(releases, 1);
+});
+
+test('the response header guard refuses overflowing or invalid timer values', () => {
+  for (const upstreamHeaderMs of [0, -1, 1.5, Infinity, NaN, '100', 2147483648, Number.MAX_SAFE_INTEGER]) {
+    assert.throws(() => createPoolRouter({ controller: fakeController(), getIngressKey: async () => key, upstreamHeaderMs }), TypeError);
   }
 });

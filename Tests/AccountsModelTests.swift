@@ -25,6 +25,37 @@ final class AccountURLProtocol: URLProtocol, @unchecked Sendable {
     static func captured() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
 }
 
+final class AccountEventURLProtocol: URLProtocol, @unchecked Sendable {
+    struct Response {
+        let status: Int
+        let type: String
+        let body: String
+        let finish: Bool
+    }
+    static let lock = NSLock()
+    nonisolated(unsafe) static var responses: [Response] = []
+    nonisolated(unsafe) static var requests: [URLRequest] = []
+    nonisolated(unsafe) static var stops = 0
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock()
+        let index = Self.requests.count; Self.requests.append(request)
+        let response = Self.responses[min(index, Self.responses.count - 1)]
+        Self.lock.unlock()
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: response.status, httpVersion: nil,
+            headerFields: ["Content-Type": response.type])!, cacheStoragePolicy: .notAllowed)
+        for byte in response.body.utf8 { client?.urlProtocol(self, didLoad: Data([byte])) }
+        if response.finish { client?.urlProtocolDidFinishLoading(self) }
+    }
+    override func stopLoading() { Self.lock.lock(); Self.stops += 1; Self.lock.unlock() }
+    static func install(_ values: [Response]) {
+        lock.lock(); responses = values; requests = []; stops = 0; lock.unlock()
+    }
+    static func captured() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
+    static func cancelled() -> Int { lock.lock(); defer { lock.unlock() }; return stops }
+}
+
 @main @MainActor struct AccountsModelTests {
     static var assertions = 0
     static func expect(_ value: @autoclosure () -> Bool, _ message: String) {
@@ -65,6 +96,13 @@ final class AccountURLProtocol: URLProtocol, @unchecked Sendable {
             try? await Task.sleep(for:.milliseconds(2))
         }
         preconditionFailure("Synthetic setup did not settle")
+    }
+    static func until(_ description: String, _ predicate: () -> Bool) async {
+        for _ in 0..<2000 {
+            if predicate() { return }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        preconditionFailure("Synthetic event condition did not settle: \(description)")
     }
     static func requestBody(_ request: URLRequest) throws -> [String: Any] {
         var data = request.httpBody ?? Data()
@@ -206,7 +244,206 @@ final class AccountURLProtocol: URLProtocol, @unchecked Sendable {
             expect((model.actionError != nil) == (iteration % 2 != 0),"Alternating mutation success and conflict outcomes settle without hidden retries")
         }
     }
+    static func menuBarAndTokenUsage() throws {
+        func decoded(_ state: [String: Any]) -> PoolSnapshot { try! snapshot(state) }
+        let emails = ["first@example.invalid", "second@example.invalid", "third@example.invalid"]
+        var state = fixture()
+        let sample = (state["accounts"] as! [[String: Any]])[0]
+        var rows = emails.enumerated().map { index, email -> [String: Any] in
+            var row = sample
+            row["email"] = email; row["remaining_percent"] = [65.8, 42.4, 90.0][index]
+            row["active_requests"] = 0; row["active_inference_requests"] = 0
+            row["checked_at"] = "2026-10-25T12:00:00.000Z"
+            return row
+        }
+        state["accounts"] = rows; state["priority_order"] = emails; state["next_eligible_account"] = emails[0]
+        var value = decoded(state)
+        expect(value.tokenUsage == nil, "An older service without token usage remains readable")
+        expect(value.menuBarAccount?.email == emails[0], "An idle automatic pool shows the next selected account")
+        expect(MenuBarQuotaPresentation(snapshot: value).title == "65%", "The menu percentage follows the account row's integer truncation")
+        rows[1]["active_inference_requests"] = 1; rows[1]["active_requests"] = 1; state["accounts"] = rows
+        value = decoded(state)
+        expect(value.menuBarAccount?.email == emails[1], "The active inference account wins over the next eligible account")
+        state["mode"] = "fixed"; state["fixed_email"] = emails[2]
+        expect(decoded(state).menuBarAccount?.email == emails[1], "Switching fixed account cannot replace the account of an ongoing inference")
+        rows[0]["active_inference_requests"] = 1; state["accounts"] = rows
+        state["last_used"] = ["email": emails[1], "at": "2026-10-25T12:00:00Z"]
+        value = decoded(state)
+        let active = MenuBarQuotaPresentation(snapshot: value)
+        expect(value.menuBarAccount?.email == emails[1] && active.tooltip.contains(emails[1]), "Concurrent inference follows the most recently used active account")
+        expect(active.tooltip.contains(L10n.text("menuBar.multipleActive", "2")), "The tooltip discloses concurrent active accounts")
+        expect(active.tooltip.contains(L10n.text("menuBar.checkedAt", "").trimmingCharacters(in: .whitespaces)), "The tooltip carries the quota measurement time")
+        state["last_used"] = ["email": emails[2], "at": "2026-10-25T12:00:00Z"]
+        expect(decoded(state).menuBarAccount?.email == emails[0], "An inactive last-used account cannot replace the active priority order")
+        rows[0]["active_inference_requests"] = 0; rows[1]["active_inference_requests"] = 0
+        rows[0]["active_requests"] = 7; state["accounts"] = rows
+        expect(decoded(state).menuBarAccount?.email == emails[2], "Token-count activity does not replace the idle fixed selection")
+        state["mode"] = "automatic"; state["next_eligible_account"] = emails[1]
+        expect(decoded(state).menuBarAccount?.email == emails[1], "Token-count activity does not replace the idle automatic selection")
+        state["next_eligible_account"] = NSNull()
+        expect(MenuBarQuotaPresentation(snapshot: decoded(state)).title == "—", "No selected account is unknown rather than zero")
+        state["next_eligible_account"] = emails[0]
+        for (remaining, title) in [(0.0, "0%"), (100.0, "100%"), (120.0, "100%"), (-2.0, "0%"), (0.9, "0%")] {
+            rows[0]["remaining_percent"] = remaining; state["accounts"] = rows
+            expect(MenuBarQuotaPresentation(snapshot: decoded(state)).title == title, "Quota percentages are finite, clamped and never rounded upward")
+        }
+        rows[0]["remaining_percent"] = 72.0
+        rows[0]["windows"] = [["name": "An unrelated model", "used_percent": 100, "window_seconds": 604800]]
+        state["accounts"] = rows
+        value = decoded(state)
+        expect(MenuBarQuotaPresentation(snapshot: value).title == "72%", "Additional model limits do not replace the ordinary Codex percentage")
+        expect(MenuBarQuotaPresentation(snapshot: value, unavailable: true).title == "—", "A failed local query or pending maintenance never presents stale quota as current")
+        rows[0]["remaining_percent"] = NSNull(); state["accounts"] = rows
+        expect(MenuBarQuotaPresentation(snapshot: decoded(state)).title == "—", "An unreported quota is unknown rather than zero")
+        expect(MenuBarQuotaPresentation(snapshot: nil).title == "—", "Startup without a snapshot has an explicit unknown marker")
+        let nonfiniteDecoder = JSONDecoder()
+        nonfiniteDecoder.keyDecodingStrategy = .convertFromSnakeCase
+        nonfiniteDecoder.nonConformingFloatDecodingStrategy = .convertFromString(positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
+        for remaining in ["Infinity", "-Infinity", "NaN"] {
+            rows[0]["remaining_percent"] = remaining; state["accounts"] = rows
+            value = try nonfiniteDecoder.decode(PoolSnapshot.self, from: json(state))
+            expect(MenuBarQuotaPresentation(snapshot: value).title == "—", "Non-finite quota values never reach integer conversion")
+        }
+        rows[0]["remaining_percent"] = 72.0; state["accounts"] = rows
+
+        let today: [String: Any] = ["input_tokens": 1200, "output_tokens": 300, "cache_read_tokens": 4000, "cache_write_tokens": 500,
+            "cache_tokens": 4500, "total_tokens": 6000, "requests": 3, "unreported_requests": 1]
+        let total: [String: Any] = ["input_tokens": 12_000_000, "output_tokens": 300_000, "cache_read_tokens": 40_000_000, "cache_write_tokens": 5_000_000,
+            "cache_tokens": 45_000_000, "total_tokens": 57_300_000, "requests": 300, "unreported_requests": 2]
+        var usage: [String: Any] = ["available": true, "persisted": true, "started_at": "2026-10-25T00:00:00.000Z", "today": today, "total": total]
+        state["token_usage"] = usage
+        var tokens = decoded(state).tokenUsage!
+        expect(tokens.totals(for: .today)?.totalTokens == 6000, "Today selects only today's reported totals")
+        expect(tokens.totals(for: .total)?.totalTokens == 57_300_000, "Accumulated selects the durable lifetime totals")
+        expect(tokens.totals(for: .today)?.cacheTokens == 4500 && tokens.totals(for: .today)?.inputTokens == 1200, "Cache reads and writes are separate from input and counted once")
+        expect(tokens.totals(for: .today)?.unreportedRequests == 1, "Missing usage remains explicit instead of appearing in complete totals")
+        expect(TokenUsageTotals.formatted(57_300_000).filter(\.isNumber) == "57300000", "Large localized token counts retain every digit in their full representation")
+        expect(!TokenUsageTotals.compact(57_300_000).isEmpty, "Large metric columns have a compact localized value")
+        expect(TokenUsageSnapshot.date("2026-10-25T00:00:00.000Z") != nil && TokenUsageSnapshot.date("2026-10-25T00:00:00Z") != nil, "Both supported service timestamp forms are readable")
+        expect(TokenUsageSnapshot.date("not-a-date") == nil, "Malformed start dates are never presented as real dates")
+        usage["persisted"] = false; state["token_usage"] = usage
+        expect(decoded(state).tokenUsage?.totals(for: .today) == nil, "Unsaved history is unavailable rather than falsely durable")
+        usage["persisted"] = true; usage["available"] = false; state["token_usage"] = usage
+        expect(decoded(state).tokenUsage?.totals(for: .total) == nil, "Unavailable history cannot render fabricated accumulated totals")
+        usage["available"] = true
+        for malformed in [["input_tokens": -1], ["cache_tokens": 4501], ["total_tokens": 6001], ["output_tokens": 9_007_199_254_740_992]] {
+            var values = today; malformed.forEach { values[$0.key] = $0.value }
+            usage["today"] = values; state["token_usage"] = usage
+            tokens = decoded(state).tokenUsage!
+            expect(tokens.totals(for: .today) == nil, "Invalid or overlapping token counters fail closed")
+        }
+        state["token_usage"] = ["available": false, "persisted": false]
+        expect(decoded(state).tokenUsage?.totals(for: .today) == nil, "An unavailable receipt may omit counters without breaking the account panel")
+    }
+
+    static func realtimeUpdates() async throws {
+        let model = makeModel(); defer { model.stop() }
+        model.snapshot = try snapshot(fixture())
+        var state = fixture(revision: 2)
+        AccountURLProtocol.install { _ in try json(state) }
+        model.refreshing = true
+        for _ in 0..<20 { model.serviceDidChange() }
+        await Task.yield()
+        expect(AccountURLProtocol.captured().isEmpty, "Events during refresh wait without starting a competing request")
+        model.refreshing = false
+        await until("event refresh") { model.snapshot?.revision == 2 }
+        expect(AccountURLProtocol.captured().map { $0.url?.path } == ["/_bridge/accounts"], "A burst of events coalesces into one local account read")
+        expect(AccountURLProtocol.captured().allSatisfy { $0.httpMethod == "GET" }, "Realtime events never trigger quota mutations or full remote refresh")
+
+        state = fixture(revision: 3)
+        AccountURLProtocol.install { _ in try json(state) }
+        model.applying = true
+        for _ in 0..<20 { model.serviceDidChange() }
+        await Task.yield()
+        expect(AccountURLProtocol.captured().isEmpty, "Events during a mutation retain their invalidation until the action finishes")
+        model.applying = false
+        await until("post-action event refresh") { model.snapshot?.revision == 3 }
+        expect(AccountURLProtocol.captured().count == 1, "Releasing the mutation gate drains the pending event once")
+
+        let firstState = fixture(revision: 4), latestState = fixture(revision: 5), release = DispatchSemaphore(value: 0)
+        var fetches = 0
+        AccountURLProtocol.install { _ in
+            fetches += 1
+            if fetches == 1 {
+                guard release.wait(timeout: .now() + 5) == .success else { throw URLError(.timedOut) }
+                return try json(firstState)
+            }
+            return try json(latestState)
+        }
+        model.serviceDidChange()
+        await until("first event read in flight") { model.refreshing }
+        for _ in 0..<20 { model.serviceDidChange() }
+        release.signal()
+        await until("second event read") { model.snapshot?.revision == 5 }
+        expect(AccountURLProtocol.captured().count == 2, "An event during an in-flight read cannot be lost behind its stale response")
+        expect(AccountURLProtocol.captured().allSatisfy { $0.url?.path == "/_bridge/accounts" }, "Deferred event reads remain local snapshots")
+
+        state = fixture(revision: 6, connected: false)
+        AccountURLProtocol.install { _ in try json(state) }
+        model.serviceDidChange()
+        model.stop()
+        await Task.yield()
+        expect(AccountURLProtocol.captured().isEmpty, "Stop cancels a scheduled event read before dispatch")
+        model.serviceDidChange(); await Task.yield()
+        expect(AccountURLProtocol.captured().isEmpty, "Events after stop cannot restart network work")
+
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [AccountURLProtocol.self]
+        let eventConfig = URLSessionConfiguration.ephemeral; eventConfig.protocolClasses = [AccountEventURLProtocol.self]
+        AccountEventURLProtocol.install([
+            .init(status: 404, type: "application/json", body: "{}", finish: false),
+            .init(status: 200, type: "text/event-stream; charset=utf-8", body: ": heartbeat\n\nevent: ignored\ndata: {}\n\nevent: changed\ndata: {}\n\n", finish: false),
+        ])
+        var ordinaryReads = 0
+        AccountURLProtocol.install { _ in
+            ordinaryReads += 1
+            return try json(fixture(revision: ordinaryReads + 10))
+        }
+        let streaming = AccountsModel(staging: true, session: URLSession(configuration: config), eventSession: URLSession(configuration: eventConfig), expectedServiceBuild: nil)
+        defer { streaming.stop() }
+        streaming.snapshot = try snapshot(fixture(revision: 10))
+        streaming.start()
+        await until("SSE initial request") { AccountEventURLProtocol.captured().count == 1 && ordinaryReads >= 1 }
+        expect(streaming.queryError == nil, "A missing event endpoint quietly retains the polling fallback")
+        await until("SSE reconnection and event") { AccountEventURLProtocol.captured().count >= 2 && ordinaryReads >= 2 }
+        expect(ordinaryReads == 2, "Fragmented changed events reload immediately while comments and unknown events are ignored")
+        expect(AccountEventURLProtocol.captured().allSatisfy { $0.url?.path == "/_bridge/events" && $0.value(forHTTPHeaderField: "Accept") == "text/event-stream" }, "The realtime subscription uses the dedicated event contract")
+        expect(AccountEventURLProtocol.cancelled() >= 1, "A non-event response body is cancelled before reconnecting")
+        let requestsBeforeStop = AccountEventURLProtocol.captured().count, stopsBeforeStop = AccountEventURLProtocol.cancelled()
+        streaming.stop()
+        await until("SSE cancellation") { AccountEventURLProtocol.cancelled() > stopsBeforeStop }
+        try? await Task.sleep(for: .milliseconds(50))
+        expect(AccountEventURLProtocol.captured().count == requestsBeforeStop, "Stopping cancels the open subscription without scheduling another connection")
+    }
+
     static func main() async throws {
+        try await realtimeUpdates()
+        try menuBarAndTokenUsage()
+        let roomy = CGSize(width: 1440, height: 1000)
+        var panelSize = PanelSizeState()
+        func fitted(_ state: PanelSizeState, connection: Bool = false, maximum: CGSize = roomy, minimumHeight: CGFloat = 390, idealHeight: CGFloat = 510) -> CGSize {
+            state.size(connection: connection, maximum: maximum, minimumHeight: minimumHeight, idealHeight: idealHeight)
+        }
+        expect(fitted(panelSize) == CGSize(width: 420, height: 510), "A short account list starts at its natural content height without a 650-point floor")
+        expect(fitted(panelSize, idealHeight: 1400) == CGSize(width: 420, height: 650), "A long list retains a bounded default and scrolls")
+        expect(PanelSizeState.minimum(fittingHeight: 390.2) == CGSize(width: 420, height: 391), "The resize minimum follows the measured controls and viewport without fractional clipping")
+        panelSize.remember(CGSize(width: 780, height: 840), connection: false)
+        expect(fitted(panelSize) == CGSize(width: 780, height: 840), "Panel reopen and refresh preserve the in-memory resize")
+        expect(fitted(panelSize, connection: true, minimumHeight: 340, idealHeight: 340) == CGSize(width: 420, height: 340), "The connection form retains its own compact default")
+        panelSize.remember(CGSize(width: 620, height: 480), connection: true)
+        expect(fitted(panelSize) == CGSize(width: 780, height: 840), "Visiting the connection form does not erase the main panel size")
+        expect(fitted(panelSize, maximum: CGSize(width: 700, height: 750)) == CGSize(width: 700, height: 750), "A smaller display constrains the visible panel")
+        expect(fitted(panelSize) == CGSize(width: 780, height: 840), "Display constraints do not erase the preferred size")
+        panelSize.remember(CGSize(width: 620, height: 470), connection: false)
+        expect(fitted(panelSize) == CGSize(width: 620, height: 470), "A user can keep a shorter panel when one complete account fits")
+        expect(fitted(panelSize, minimumHeight: 520) == CGSize(width: 620, height: 520), "New fixed controls temporarily raise the minimum to their measured height")
+        expect(fitted(panelSize) == CGSize(width: 620, height: 470), "Content changes do not erase the user's smaller preferred height")
+        expect(panelSize.width(connection: false, maximum: roomy.width) == 620, "Layout measures content at the remembered width")
+        panelSize.remember(CGSize(width: 100, height: 100), connection: false)
+        expect(fitted(panelSize) == CGSize(width: 420, height: 390), "The panel cannot shrink below its current measured controls")
+        expect(fitted(panelSize, minimumHeight: 519, idealHeight: 0) == CGSize(width: 420, height: 519), "A missing ideal measurement cannot shrink through the first complete account")
+        expect(fitted(panelSize, minimumHeight: 538, idealHeight: 511) == CGSize(width: 420, height: 538), "Fixed notices and a complete account override a stale shorter ideal size")
+        expect(fitted(panelSize, maximum: CGSize(width: 400, height: 300)) == CGSize(width: 400, height: 300), "Visible display bounds take precedence over an oversized content minimum")
+        expect(fitted(PanelSizeState()) == CGSize(width: 420, height: 510), "A fresh app run fits its content instead of restoring the previous run's size")
         var zeroMeterFixture = fixture()
         var zeroMeterRow = (zeroMeterFixture["accounts"] as! [[String: Any]])[0]
         zeroMeterRow["ordinary_allowed"] = true; zeroMeterRow["remaining_percent"] = 0
