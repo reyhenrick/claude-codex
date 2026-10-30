@@ -69,7 +69,7 @@ cd claude-codex
 
 `./build.sh` não recebe argumentos: gera sempre um aplicativo universal com `arm64` e `x86_64`. O build baixa as versões fixadas em [dependencies.json](../dependencies.json), verifica SHA-256, inclui Node.js, CLIProxyAPI, Sparkle e suas licenças e valida o pacote resultante.
 
-O resultado fica em `build/Claude Codex.app`. Copie o aplicativo para `/Applications` ou `~/Applications` pelo Finder e abra-o de lá. O aplicativo distribuído inclui seu runtime e funciona sem Node.js, npm ou Python instalados pelo usuário.
+O resultado fica em `build/products.noindex/Claude Codex.app`. Cada build bem-sucedido substitui o produto anterior e limpa a cópia temporária de recuperação após validar a nova versão. A pasta de saída não é indexada pelo Spotlight, e o build remove o registro do produto de desenvolvimento no Launch Services. Copie o aplicativo para `/Applications` ou `~/Applications` pelo Finder e escolha substituir a instalação existente. O aplicativo distribuído inclui seu runtime e funciona sem Node.js, npm ou Python instalados pelo usuário.
 
 A pipeline atual produz assinatura ad hoc e não realiza notarização pela Apple. Essa condição, as arquiteturas e os hashes dos pacotes são registrados nos metadados de distribuição. A assinatura das atualizações é descrita abaixo.
 

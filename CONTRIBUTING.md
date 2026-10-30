@@ -12,7 +12,9 @@ npm --prefix Bridge ci --ignore-scripts
 ./build.sh
 ```
 
-The build always produces a universal app for Apple silicon and Intel at `build/Claude Codex.app`. Dependencies are pinned and verified against SHA-256 checksums. Build output is signed ad hoc and is not notarized by Apple. Building does not replace an installed app or publish a release.
+The build always produces a universal app for Apple silicon and Intel at `build/products.noindex/Claude Codex.app`. Dependencies are pinned and verified against SHA-256 checksums. Build output is signed ad hoc and is not notarized by Apple. Building does not replace an installed app or publish a release.
+
+Each successful build atomically replaces the previous product and removes its temporary rollback copy after validation. The output directory is excluded from Spotlight indexing, and the build removes its development product from Launch Services registration. An older product at `build/Claude Codex.app` is retired only after the new product is verified and the older copy is idle. A busy or uncertain copy is preserved. Interrupted replacement state stays in a private transaction directory for recovery on the next invocation; do not delete that directory manually.
 
 The tests use synthetic accounts and responses. They cover the bridge, account policies, migration, language catalogs, update policies and signatures. They do not prove every live provider operation, imported conversation or hardware configuration. Report the checks actually performed and any limitations.
 
@@ -34,7 +36,7 @@ Build the app first, then use this command to run a separate copy of the actual 
 
 Take a real screenshot of the app’s window, using the operating system’s window capture or a computer-use screenshot tool. Keep the original captures outside the repository as `panel-<language>.jpg`. The README assets were captured from the running app; do not substitute SwiftUI image exports, drawings or generated interface images.
 
-The fixture accepts account reads and refreshes and rejects all account-changing requests. The app’s staging mode skips the production service and updater and disables real installation setup. No account files or credentials are copied. The script records its process IDs and stops only its own processes when the documentation app closes. Do not connect a real account or enable login startup in this documentation instance.
+The fixture accepts account reads and refreshes and rejects all account-changing requests. The app’s staging mode skips the production service and updater and disables real installation setup. No account files or credentials are copied. The script records its process IDs and stops only its own processes when the documentation app closes. It then removes its generated preview bundle and its application registration. Do not connect a real account or enable login startup in this documentation instance.
 
 With all six original captures in one folder, remove only the exterior corner background using Python and Pillow:
 

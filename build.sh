@@ -85,10 +85,11 @@ for binary in node cli-proxy-api ClaudeLauncher BridgeService UpdateRecovery; do
 done
 codesign "${SIGNING_ARGS[@]}" "$APP"
 ./Scripts/verify-release.sh --app "$APP"
-if [ -e 'build/Claude Codex.app' ]; then
-    mkdir -p build/previous
-    mv 'build/Claude Codex.app' "build/previous/ClaudeCodex-$(date -u +%Y%m%dT%H%M%SZ)-$$.app"
+PRODUCT="$PWD/build/products.noindex/Claude Codex.app"
+mkdir -p "$(dirname "$PRODUCT")"
+python3 Scripts/app_bundle.py replace --source "$APP" --target "$PRODUCT" --reference "$PWD/Info.plist" --unregister-target
+if [ -e 'build/Claude Codex.app' ] || [ -L 'build/Claude Codex.app' ]; then
+    python3 Scripts/app_bundle.py retire --path "$PWD/build/Claude Codex.app" --reference "$PWD/Info.plist" --replacement "$PRODUCT"
 fi
-mv "$APP" 'build/Claude Codex.app'
-echo "Built and verified: $PWD/build/Claude Codex.app"
+echo "Built and verified: $PRODUCT"
 echo 'Create local downloads with ./Scripts/package-release.sh.'

@@ -4,6 +4,8 @@ cd "$(dirname "$0")/.."
 mkdir -p build/tests
 /usr/bin/ditto Resources build/tests/Resources
 npm --prefix Bridge test
+python3 Tests/test_app_bundle.py
+python3 Tests/test_documentation_cleanup.py
 python3 Scripts/check-localizations.py
 xcrun swiftc -parse-as-library Sources/Localization.swift Tests/LocalizationTests.swift -o build/tests/localization-tests
 build/tests/localization-tests Resources
